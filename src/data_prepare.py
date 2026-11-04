@@ -12,8 +12,8 @@ def prepare_model(name, shape):
     shape = tuple(int(n) for n in shape)
     root = Path(__file__).resolve().parents[1]
     velocity = torch.from_numpy(np.load(root / "data" / f"{name}.npy"))
-    if velocity.ndim != 2 or not velocity.is_floating_point():
-        raise ValueError("The velocity model must be a 2D floating-point array")
+    if velocity.ndim != 2 or velocity.dtype not in (torch.float32, torch.float64):
+        raise ValueError("The velocity model must be a 2D float32 or float64 array")
     if not torch.isfinite(velocity).all() or (velocity <= 0).any():
         raise ValueError("The velocity model must contain finite, positive velocities")
     # Interpolation expects [batch, channel, depth, x]; keep just the resized 2D field.

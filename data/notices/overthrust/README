@@ -1,0 +1,87 @@
+SEG/EAGE Salt and Overthrust Models
+
+# Statement
+
+The SEG/EAGE Salt and Overthrust models were created as part of a joint
+project between the Society of Exploration Geophysicists and the European
+Association of Geoscientists and Engineers. The datasets were originally
+released by the SEG as a part of the SEG/EAGE 3-D Modeling Series and are
+redistributed with the consent of the authors and the corresponding
+institutions.
+
+
+# Description
+
+The SEG/EAGE Salt and Overthrust models are two 3-D geological models that
+were created as part of a multi-phase collaboration between the SEG and
+EAGE, with funding from the U.S. Department of Energy National Laboratories,
+as well as several institutions from industry and academia. The models were
+developed by an SEG/EAGE 3-D Modeling committee, which was co-chaired by
+by Fred Aminzadeh (University of Southern California) and Fabio Rocca
+(Politecinio di Milano).
+
+The two datasets consist of the 3-D subsurface velocity models, as well as
+model surfaces and supplementary documentation. Refer to the appendix of the
+accompanying CD booklet for a full description of the content.
+
+
+# Copyright notice
+
+Copyright 1997 Society of Exploration Geophysicists
+
+
+# License
+
+This model is licensed under the Creative Commons Attribution 4.0
+International License. To view a copy of the license, visit
+https://creativecommons.org/licenses/by/4.0 or send a letter to
+Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
+
+The license permits any user to freely copy and redistribute the material
+in any medium or format. Users are free to remix, transform, and build
+upon the material for any purpose, including commercially. Refer to
+LICENSE.txt for all terms and conditions, as well as the disclaimer of
+warranties.
+
+Please DO NOT separate the model and data from this license and ALWAYS
+include the above statement and link with the data.
+
+
+# Acknowledgments
+
+This model was created by the SEG/EAGE 3-D Modeling committee, co-chaired
+by Fred Aminzadeh (University of Southern California) and Fabio Rocca
+(Politecinio di Milano). Chairpersons of the working groups included Kay
+Wyatt (Phillips Petroleum), Patrick Lailly (IFP), Norm Burkhard
+(Lawrence Livermore National Laboratory), Tim Kunz (Amoco), Jun Hua Chen
+(Chevron) and Max Mulder (TNO).
+
+Researchers involved in the creation of this model further include Jean
+Brac, Pierre Duclos, Laurence Nicoletis, Jean-Claude Lecomte and Alain 
+Bamberger (all IFP), as well as Jane Long (Lawrence Livermore National 
+Laboratory).
+
+This model was added to the SEG Open Data collection with help from Joseph
+Dellinger (BP), Ted Bakamjian (SEG), Dieter Werthmüller (TU Delft) and Philipp 
+Witte (Georgia Institute of Technology).
+
+
+# References
+
+Aminzadeh, F., Brac, J., Kunz, T., 1997. SEG/EAGE 3-D Salt and Overthrust
+Models. SEG/EAGE 3-D Modeling Series, No. 1: Distribution CD of Salt and
+Overthrust models, SEG book series.
+
+Aminzadeh, F., Burkhard, N., Long, J., Kunz, T., Duclos, P., 1996. Three
+dimensional SEG/EAGE models - An Update. The Leading Edge, Vol. 15, 2.
+
+Aminzadeh, F., Burkhard, N., Kunz, T., Nicoletis, L., Rocca, F., 1995. 3-D
+Modeling Project: 3rd Report. The Leading Edge, Vol. 14, 2.
+
+Aminzadeh, F., Burkhard, N., Kunz, T., Nicoletis, L., Rocca, F., 1994. SEG/
+EAGE 3-D Modeling Project: 2nd Update. The Leading Edge, Vol. 13, 9.
+
+Lecomte, J.-C., Campbell, E., Letouzey, J. 1994. Building the SEG/EAGE
+Overthrust Velocity Macro Model. EAGE/SEG Summer Workshop - Construction
+of 3-D Macro Velocity Depth Models. 3D Model Representation and
+Visualization.

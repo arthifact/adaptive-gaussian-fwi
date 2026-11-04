@@ -262,7 +262,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gaussian-fwi"
+name = "adaptive-gaussian-fwi"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

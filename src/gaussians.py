@@ -4,6 +4,8 @@ import math
 
 import torch
 
+from .method_settings import PARAMETERS_PER_GAUSSIAN
+
 
 def gaussian(dz, dx, long, short, angle):
     """Unit-height Gaussian; widths and offsets in metres, angle from x toward depth."""
@@ -22,11 +24,13 @@ class GaussianField:
     """
 
     def __init__(self, background, dx):
-        if background.ndim != 2 or not background.is_floating_point() or dx <= 0:
-            raise ValueError("background must be a floating-point 2D tensor and dx must be positive")
+        if (background.ndim != 2 or not background.is_floating_point()
+                or background.numel() == 0 or not bool(torch.isfinite(background).all())
+                or not math.isfinite(dx) or dx <= 0):
+            raise ValueError("background must be a nonempty finite floating-point 2D tensor and dx finite and positive")
         self.background = background.detach().clone()
         self.dx = float(dx)
-        self.params = background.new_zeros((0, 6))
+        self.params = background.new_zeros((0, PARAMETERS_PER_GAUSSIAN))
         nz, nx = background.shape
         z = torch.arange(nz, dtype=background.dtype, device=background.device) * dx
         x = torch.arange(nx, dtype=background.dtype, device=background.device) * dx
@@ -34,6 +38,18 @@ class GaussianField:
 
     def __len__(self):
         return len(self.params)
+
+    def validate_parameters(self, parameters, context):
+        """Check a loaded or proposed table before its velocity is used for fitting."""
+        if parameters.ndim != 2 or parameters.shape[1] != PARAMETERS_PER_GAUSSIAN:
+            raise ValueError(f"Expected {PARAMETERS_PER_GAUSSIAN} columns in {context}")
+        if parameters.dtype != self.background.dtype or parameters.device != self.background.device:
+            raise ValueError(f"Gaussian parameters must match the background dtype and device in {context}")
+        if not bool(torch.isfinite(parameters).all()):
+            raise FloatingPointError(f"Non-finite Gaussian parameters in {context}")
+        widths = parameters[:, 2:4].exp()
+        if not bool((torch.isfinite(widths) & (widths > 0)).all()):
+            raise FloatingPointError(f"Gaussian widths must be representable, finite and positive in {context}")
 
     def velocity(self, params=None):
         parameters = self.params if params is None else params

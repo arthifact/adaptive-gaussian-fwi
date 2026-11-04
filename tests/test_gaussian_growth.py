@@ -4,8 +4,9 @@ from unittest.mock import Mock, patch
 import torch
 
 from src.gaussians import GaussianField, gaussian
-from src.gaussians_fit import _Candidates, _grow, fit_gaussians
+from src.gaussians_fit import _grow, fit_gaussians
 from src.simulation import FWI
+from src.moment_candidates import MomentCandidates
 
 
 class GaussianGrowthTests(unittest.TestCase):
@@ -82,7 +83,7 @@ class GaussianGrowthTests(unittest.TestCase):
             return value
 
         with (
-            patch.object(_Candidates, "propose", return_value=[candidate]),
+            patch.object(MomentCandidates, "propose", return_value=[candidate]),
             patch.object(problem, "loss", record_loss),
         ):
             history = fit_gaussians(field, problem, 9, iterations=1)
@@ -95,7 +96,33 @@ class GaussianGrowthTests(unittest.TestCase):
         self.assertEqual(float(field.params[0, 5]), 75.0)
         torch.testing.assert_close(field.velocity(), truth)
 
-    def test_disabling_pruning_retains_a_weak_accepted_gaussian(self):
+    def test_exact_waveform_probe_beats_an_estimate_that_also_passes(self):
+        spec = dict(shape=(24, 30), dx=10., dt=.001, nt=400, n_shots=2, n_receivers=8,
+                    source_frequency=22., bounds=(1000., 4000.), surface_velocity=2000.)
+        problem = FWI(spec)
+        self.addCleanup(problem.close)
+        initial = torch.full(spec["shape"], 2000., dtype=torch.float64)
+        candidate = dict(z=60., x=150., long=125., short=90., angle=.35)
+        truth, fitted = GaussianField(initial, 10.), GaussianField(initial, 10.)
+        truth.add(**candidate, amp=100.)
+        problem.observed = problem.forward(truth.velocity())
+        problem.noise_energy = {9: 0.}
+        measure = problem.loss
+        measured = []
+        def record(grid, frequency):
+            measured.append(measure(grid, frequency))
+            return measured[-1]
+        with (patch.object(MomentCandidates, "propose", return_value=[candidate]),
+              patch.object(problem, "loss", side_effect=record)):
+            incoming, = fit_gaussians(fitted, problem, 9, iterations=1)
+        probe, estimate = measured
+        self.assertEqual(probe, 0.)
+        self.assertLess(probe, estimate)
+        self.assertLess(estimate, incoming)
+        self.assertEqual(measure(fitted.velocity(), 9), probe)
+        self.assertTrue(torch.equal(fitted.params, truth.params))
+
+    def test_pruning_keeps_a_weak_gaussian_that_improves_clean_waveforms(self):
         problem = FWI({
             "shape": (32, 70), "dx": 10.0, "dt": 0.001, "nt": 800,
             "n_shots": 3, "n_receivers": 35, "source_frequency": 15.0,
@@ -109,12 +136,16 @@ class GaussianGrowthTests(unittest.TestCase):
         problem.noise_energy[6] = 0.0
 
         default = GaussianField(initial, problem.dx)
-        fit_gaussians(default, problem, 6, iterations=1)
-        fit_gaussians(kept, problem, 6, iterations=1, prune=False)
-        self.assertEqual(len(default), 0)
+        # Isolate admission and pruning from the number of signed gradient regions.
+        candidate = dict(z=140.0, x=320.0, long=240.0, short=120.0, angle=0.25)
+        with patch.object(MomentCandidates, "propose", return_value=[candidate]):
+            fit_gaussians(default, problem, 6, iterations=1)
+            fit_gaussians(kept, problem, 6, iterations=1, prune=False)
+        self.assertEqual(len(default), 1)
         self.assertEqual(len(kept), 1)
         self.assertLessEqual(abs(kept.params[0, 5].item()), 5.0)
-        self.assertLess(problem.loss(kept.velocity(), 6), problem.loss(default.velocity(), 6))
+        torch.testing.assert_close(default.params, kept.params, rtol=0, atol=0)
+        self.assertLess(problem.loss(default.velocity(), 6), problem.loss(initial, 6))
 
     def test_estimate_and_trial_must_each_clear_the_noise_threshold(self):
         initial = torch.full((3, 3), 2000.0)
@@ -132,7 +163,7 @@ class GaussianGrowthTests(unittest.TestCase):
         candidates.propose.return_value = [dict(z=10.0, x=10.0, long=80.0, short=80.0, angle=0.0)]
 
         # The estimated 150 m/s gains about 0.53 in loss. The 100 m/s trial gains exactly 1.
-        for threshold, expected in ((0.5, [150.0]), (1.0, [100.0]), (1.01, [])):
+        for threshold, expected in ((0.5, [100.0]), (1.0, [100.0]), (1.01, [])):
             with self.subTest(threshold=threshold):
                 field = GaussianField(initial, 10.0)
                 _grow(field, problem, candidates, gradient, torch.ones_like(initial), 9, loss.item(), threshold)

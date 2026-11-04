@@ -1,0 +1,22 @@
+README_Modification:
+If you modify these data in any way, document your modification here, and if you pass
+these data on, include this notice with these data.
+
+Original BP distribution
+Frederic Billette, BP DWX Houston
+Mon Jul 18 16:08:15 CST 2005
+
+(The text above is the original README_Modification, as reproduced in
+2004_Benchmark_READMES.pdf. Added when this copy was re-hosted on Zenodo, 2026:)
+
+No modification. vel_z6.25m_x12.5m_exact.segy.gz is byte-identical to the file
+distributed through the SEG open-data bucket at
+https://s3.amazonaws.com/open.source.geoscience/open_data/bpvelanal2004/vel_z6.25m_x12.5m_exact.segy.gz
+(SHA-256 01b3d65c6318491b1412465c904614a6c35bd73ea0ffc6a8d866917181749b9c), which is the
+gzip-compressed form of vel_z6.25m_x12.5m_exact.segy listed in the README.
+
+Adaptive Gaussian FWI conversion
+The exact-velocity SEG-Y was decoded to float32 m/s, arranged as [depth, x],
+and stored as data/bp_salt.npy. All 1911 x 5395 velocities agree with the
+original SEG-Y. The experiment area-resamples this array in memory to a
+70 x 70 synthetic grid; the resampled field is saved in each run archive.

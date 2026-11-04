@@ -1,6 +1,7 @@
 [project]
-name = "gaussian-fwi"
+name = "adaptive-gaussian-fwi"
 version = "0.1.0"
+description = "Adaptive Gaussian parametrization for seismic macro-velocity inversion."
 requires-python = ">=3.12"
 dependencies = [
     "deepwave>=0.0.27",

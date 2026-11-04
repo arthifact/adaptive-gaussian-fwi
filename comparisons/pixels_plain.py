@@ -1,248 +1,221 @@
-"""Run this file for plain-pixel FWI from an original model in data/."""
+"""Fit velocities directly on the grid at 6, 9, 13, 20 and 30 Hz."""
 
-import json
-import math
+import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 from importlib.metadata import version
+import json
+import math
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 
 import deepwave
-import matplotlib
 import numpy as np
 import torch
-
-matplotlib.use("Agg")  # Save figures without opening a window.
-import matplotlib.pyplot as plt
-
-
-def prepare_model(name, shape):
-    if len(shape) != 2 or any(n < 2 or int(n) != n for n in shape):
-        raise ValueError("shape must be (depth cells, horizontal cells), with at least two whole cells per axis")
-    shape = tuple(int(n) for n in shape)
-    root = Path(__file__).resolve().parents[1]
-    velocity = torch.from_numpy(np.load(root / "data" / f"{name}.npy"))
-    if velocity.ndim != 2 or not velocity.is_floating_point():
-        raise ValueError("The velocity model must be a 2D floating-point array")
-    if not torch.isfinite(velocity).all() or (velocity <= 0).any():
-        raise ValueError("The velocity model must contain finite, positive velocities")
-    # Interpolation expects [batch, channel, depth, x]; keep just the resized 2D field.
-    velocity = torch.nn.functional.interpolate(velocity[None, None], size=shape, mode="area")[0, 0]
-    return velocity
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 
-class PixelFWI:
-    """Own pixel model, survey and observations for this comparison."""
+ROOT = Path(__file__).resolve().parents[1]
+SHAPE, DX, DT, NT = (70, 70), 10., .001, 1000
+SHOTS, SOURCE_HZ, SNR_DB = 5, 15., 30.
+MACRO_BANDS, GRID_BANDS = (6, 9), (13, 20, 30)
+MACRO_ITERATIONS, GRID_ITERATIONS = 325, 350
+ADAM_RATE, ADAM_EPS = 10., 1e-20
 
-    def __init__(self, initial, survey):
-        self.shape = tuple(survey["shape"])
-        if len(self.shape) != 2 or any(n < 2 or int(n) != n for n in self.shape):
-            raise ValueError("shape must contain two whole cell counts, each at least 2")
-        self.shape = tuple(int(n) for n in self.shape)
-        self.dx, self.dt = float(survey["dx"]), float(survey["dt"])
-        self.nt, self.n_shots = int(survey["nt"]), int(survey["n_shots"])
-        if self.nt != survey["nt"] or self.n_shots != survey["n_shots"]:
-            raise ValueError("nt and n_shots must be whole numbers")
-        self.source_frequency = float(survey["source_frequency"])
-        self.bounds = tuple(survey["bounds"])
-        if (len(self.bounds) != 2 or not all(math.isfinite(v) and v > 0 for v in self.bounds)
-                or self.bounds[0] >= self.bounds[1]):
-            raise ValueError("bounds must be positive (minimum, maximum) velocities in increasing order")
-        nx = self.shape[1]
-        n_receivers = nx if survey["n_receivers"] is None else int(survey["n_receivers"])
-        if survey["n_receivers"] is not None and n_receivers != survey["n_receivers"]:
-            raise ValueError("n_receivers must be a whole number or None")
-        if not 1 <= self.n_shots <= nx or not 1 <= n_receivers <= nx:
-            raise ValueError("Use between 1 and nx surface shots and receivers")
-        if not all(math.isfinite(v) and v > 0 for v in (self.dx, self.dt, self.source_frequency)) or self.nt < 2:
-            raise ValueError("Spacing, time step and source frequency must be finite and positive; nt must be at least 2")
-        if self.source_frequency > 0.5 / self.dt:
-            raise ValueError("The source peak frequency must not exceed Nyquist")
-        self.sources = torch.zeros(self.n_shots, 1, 2, dtype=torch.long)
-        self.sources[:, 0, 1] = torch.linspace(0, nx - 1, self.n_shots).round().long()
-        self.receivers = torch.zeros(1, n_receivers, 2, dtype=torch.long)
-        self.receivers[0, :, 1] = torch.linspace(0, nx - 1, n_receivers).round().long()
-        self.wavelet = deepwave.wavelets.ricker(
-            self.source_frequency, self.nt, self.dt, 1.5 / self.source_frequency,
-        ).reshape(1, 1, self.nt)
-        if tuple(initial.shape) != self.shape:
-            raise ValueError("The initial model must match the survey dimensions")
-        self.background = initial.detach().clone()
-        self.details = torch.zeros_like(initial, requires_grad=True)
-        self.observed = None
-        self._pool = ThreadPoolExecutor(min(self.n_shots, 8))
 
-    def velocity(self):
-        return self.background + self.details
+def load_models(name):
+    values = np.load(ROOT / "data" / f"{name}.npy", allow_pickle=False)
+    if values.ndim != 2 or not values.size or values.dtype not in (np.float32, np.float64):
+        raise ValueError("Expected a 2-D float32 or float64 velocity array")
+    if not np.isfinite(values).all() or not (values > 0).all():
+        raise ValueError("Velocities must be finite and positive")
+    truth = torch.nn.functional.interpolate(torch.from_numpy(values)[None, None],
+                                            size=SHAPE, mode="area")[0, 0]
+    depth = torch.arange(SHAPE[0], dtype=truth.dtype)[:, None] * DX
+    initial = (1500. + 1500. * depth / depth.max()).expand_as(truth).to(truth).clone()
+    return truth, initial
 
-    def _simulate(self, velocity, shot, accuracy=4):
-        result = deepwave.scalar(
-            velocity, self.dx, self.dt,
-            source_amplitudes=self.wavelet.to(velocity),
-            source_locations=self.sources[shot:shot + 1],
-            receiver_locations=self.receivers,
-            accuracy=accuracy, pml_width=20, pml_freq=self.source_frequency, max_vel=self.bounds[1],
-        )
-        # Deepwave returns receiver recordings last; remove the single-shot axis.
-        return result[-1][0]
 
-    def forward(self, velocity, accuracy=8):
-        """Generate clean recordings [shot, receiver, time] from the true model."""
-        velocity = velocity.detach()
-        recordings = self._pool.map(
-            lambda shot: self._simulate(velocity, shot, accuracy), range(self.n_shots),
-        )
+def digest(tensor):
+    return hashlib.sha256(tensor.detach().contiguous().numpy().tobytes()).hexdigest()
+
+
+class Survey:
+    """Five surface shots, source-shaped noise and the normalized band loss."""
+
+    def __init__(self, truth, seed, pool):
+        self.pool = pool
+        self.bounds = 1000., max(5500., float(truth.max()))
+        self.lock = Lock()
+        self.forwards = self.adjoints = 0
+        self.sources = torch.zeros(SHOTS, 1, 2, dtype=torch.long)
+        self.sources[:, 0, 1] = torch.linspace(0, truth.shape[1] - 1, SHOTS).round().long()
+        self.receivers = torch.zeros(1, truth.shape[1], 2, dtype=torch.long)
+        self.receivers[0, :, 1] = torch.arange(truth.shape[1])
+        self.wavelet = deepwave.wavelets.ricker(SOURCE_HZ, NT, DT, 1.5 / SOURCE_HZ).reshape(1, 1, NT)
+        clean = self.forward(truth, accuracy=8)
+        generator = torch.Generator().manual_seed(seed)
+        white = torch.randn(clean.shape, dtype=truth.dtype, generator=generator)
+        source = torch.fft.rfft(self.wavelet[0, 0].to(truth), 2 * NT).abs()
+        noise = torch.fft.irfft(torch.fft.rfft(white, 2 * NT) * source, 2 * NT)[..., :NT]
+        norm = noise.norm()
+        if not torch.isfinite(norm) or norm == 0:
+            raise ValueError("Cannot generate nonzero source-shaped noise")
+        self.observed = clean + (noise * clean.norm() / norm) / 10**(SNR_DB / 20)
+
+    def shot(self, velocity, index, receivers=None, accuracy=4):
+        with self.lock:
+            self.forwards += 1
+        waves = deepwave.scalar(velocity, DX, DT, source_amplitudes=self.wavelet.to(velocity),
+                                source_locations=self.sources[index:index + 1],
+                                receiver_locations=self.receivers if receivers is None else receivers,
+                                accuracy=accuracy, pml_width=20, pml_freq=SOURCE_HZ, max_vel=self.bounds[1])
+        return waves[-1][0]
+
+    def forward(self, velocity, accuracy=4):
+        recordings = self.pool.map(lambda s: self.shot(velocity.detach(), s, accuracy=accuracy), range(SHOTS))
         return torch.stack(list(recordings))
 
-    def add_noise(self, shots, snr_db, seed=0):
-        """Add reproducible Gaussian noise with the source wavelet's spectrum."""
-        generator = torch.Generator(device=shots.device).manual_seed(seed)
-        white = torch.randn(shots.shape, dtype=shots.dtype, device=shots.device, generator=generator)
-        n_fft = 2 * shots.shape[-1]
-        white_spectrum = torch.fft.rfft(white, n_fft)
-        wavelet_spectrum = torch.fft.rfft(self.wavelet[0, 0].to(shots), n_fft).abs()
-        noise = torch.fft.irfft(white_spectrum * wavelet_spectrum, n_fft)
-        noise = noise[..., :shots.shape[-1]]
-        scaled_noise = noise * shots.norm() / noise.norm()
-        return shots + scaled_noise / 10 ** (snr_db / 20)
+    def start_band(self, frequency):
+        if not 0 < frequency <= .5 / DT:
+            raise ValueError("Band cutoff must be positive and at or below Nyquist")
+        bins = torch.fft.rfftfreq(2 * NT, DT, dtype=self.observed.dtype)
+        rolloff = ((bins - .7 * frequency) / (.3 * frequency)).clamp(0, 1)
+        self.taper = torch.cos(.5 * torch.pi * rolloff).square()
+        self.taper[bins >= frequency] = 0.
+        self.taper[0] = 1.
+        self.energy = self.filter(self.observed).square().sum()
+        if not torch.isfinite(self.energy) or self.energy <= torch.finfo(self.energy.dtype).tiny:
+            raise ValueError("No usable observed data energy in this band")
 
-    def validate_cutoff(self, frequency):
-        nyquist = 0.5 / self.dt
-        if not math.isfinite(frequency) or not 0 < float(frequency) <= nyquist:
-            raise ValueError(
-                f"Invalid cutoff {frequency} Hz. The frequency must be finite and positive "
-                f"and no higher than Nyquist ({nyquist} Hz)."
-            )
+    def filter(self, traces):
+        spectrum = torch.fft.rfft(traces, 2 * NT) * self.taper
+        return torch.fft.irfft(spectrum, 2 * NT)[..., :NT]
 
-    def _lowpass(self, recordings, frequency):
-        self.validate_cutoff(frequency)
-        frequency = float(frequency)
-        n_fft = 2 * recordings.shape[-1]
-        spectrum = torch.fft.rfft(recordings, n_fft)
-        frequencies = torch.fft.rfftfreq(n_fft, self.dt, dtype=spectrum.real.dtype, device=spectrum.device)
-        # Fade smoothly from 70% of the cutoff to zero at the cutoff.
-        rolloff = ((frequencies - 0.7 * frequency) / (0.3 * frequency)).clamp(0, 1)
-        taper = torch.cos(0.5 * torch.pi * rolloff)**2
-        taper[frequencies >= frequency] = 0.0
-        taper[0] = 1.0
-        filtered = torch.fft.irfft(spectrum * taper, n_fft)
-        return filtered[..., :recordings.shape[-1]]
+    def loss(self, velocity):
+        residual = self.filter(self.forward(velocity) - self.observed)
+        value = float(residual.square().sum() / self.energy)
+        if not math.isfinite(value):
+            raise FloatingPointError("Non-finite waveform loss")
+        return value
 
-    def _gradient(self, velocity, frequency):
-        if self.observed is None:
-            raise ValueError("Assign model.observed before fitting")
-        expected_shape = (self.n_shots, self.receivers.shape[1], self.nt)
-        if tuple(self.observed.shape) != expected_shape:
-            raise ValueError(f"Observed recordings must have shape {expected_shape}")
-        data_energy = (self._lowpass(self.observed, frequency)**2).sum()
-        if not torch.isfinite(data_energy) or data_energy <= torch.finfo(data_energy.dtype).tiny:
-            raise ValueError("Observed data have no usable energy in this frequency band")
-
-        def shot_gradient(shot):
-            shot_velocity = velocity.detach().requires_grad_()
-            predicted = self._simulate(shot_velocity, shot)
-            residual = self._lowpass(predicted - self.observed[shot], frequency)
-            loss = (residual**2).sum()
+    def gradient(self, velocity):
+        def one_shot(index):
+            model = velocity.detach().requires_grad_()
+            residual = self.filter(self.shot(model, index) - self.observed[index])
+            loss = residual.square().sum()
             loss.backward()
-            return loss.detach(), shot_velocity.grad
+            return loss.detach(), model.grad
 
-        losses, gradients = zip(*self._pool.map(shot_gradient, range(self.n_shots)))
-        return float(sum(losses) / data_energy), sum(gradients) / data_energy
-
-    def fit(self, frequency, iterations=340):
-        """Fit one frequency with fresh Adam state; return the loss before each update."""
-        self.validate_cutoff(frequency)
-        if iterations < 0:
-            raise ValueError("iterations must be nonnegative")
-        losses = []
-        if iterations == 0:
-            return losses
-        optimizer = torch.optim.Adam([self.details], lr=10.0, eps=1e-20)
-        for _ in range(iterations):
-            velocity = self.velocity().detach()
-            loss, gradient = self._gradient(velocity, frequency)
-            losses.append(loss)
-            optimizer.zero_grad()
-            self.details.grad = gradient
-            optimizer.step()
-            with torch.no_grad():
-                self.details.clamp_(self.bounds[0] - self.background, self.bounds[1] - self.background)
-        print(f"Plain pixels: {frequency:g} Hz, loss {loss:.3e}")
-        return losses
+        losses, gradients = zip(*self.pool.map(one_shot, range(SHOTS)))
+        self.adjoints += len(gradients)
+        loss, gradient = float(sum(losses) / self.energy), sum(gradients) / self.energy
+        if not math.isfinite(loss) or not torch.isfinite(gradient).all():
+            raise FloatingPointError("Non-finite waveform loss or gradient")
+        return loss, gradient
 
 
-def save_models(true, final, path):
-    """Save this comparison's true and recovered models as a PNG."""
-    fig, axes = plt.subplots(1, 2, figsize=(6, 4), layout="constrained")
-    for ax, title, velocity in zip(axes, ("True", "Plain pixels"), (true, final)):
-        image = ax.imshow(velocity.detach().cpu(), cmap="jet", vmin=float(true.min()), vmax=float(true.max()))
-        ax.set(title=title, xlabel="x (cells)")
-    axes[0].set_ylabel("Depth (cells)")
-    fig.colorbar(image, ax=list(axes), label="Velocity (m/s)", shrink=0.8)
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
+METHOD_NAME = "pixels_plain"
+
+
+def fit_grid_band(background, details, survey, frequency, iterations):
+    """Fit the grid at one frequency, carrying cell corrections across bands."""
+    started = perf_counter()
+    before = survey.forwards, survey.adjoints
+    survey.start_band(frequency)
+    optimizer = torch.optim.Adam([details], lr=ADAM_RATE, eps=ADAM_EPS)
+    losses = []
+    for _ in range(iterations):
+        current = background + details.detach()
+        loss, gradient = survey.gradient(current)
+        losses.append(loss)
+        optimizer.zero_grad(set_to_none=True)
+        details.grad = gradient
+        optimizer.step()
+        with torch.no_grad():
+            if not torch.isfinite(details).all():
+                raise FloatingPointError("Non-finite grid update")
+            details.clamp_(survey.bounds[0] - background, survey.bounds[1] - background)
+    grid = (background + details.detach()).clone()
+    seconds = perf_counter() - started
+    forwards = survey.forwards - before[0]
+    adjoints = survey.adjoints - before[1]
+    endpoint = survey.loss(grid)
+    record = dict(stage="pixels", frequency=frequency, loss=losses, post_update_loss=endpoint,
+                  seconds=seconds, forward_shots=forwards, adjoint_shots=adjoints,
+                  reporting_forward_shots=survey.forwards-before[0]-forwards)
+    return grid, record
+
+
+def save_preview(path, truth, initial, frequencies, maps, bounds):
+    panels = [("Simulation truth", truth), ("Starting ramp", initial)]
+    panels.extend((f"Plain pixels\n{band:g} Hz", grid)
+                  for band, grid in zip(frequencies, maps, strict=True))
+    nz, nx = truth.shape
+    extent = (-DX / 2, (nx - .5) * DX, (nz - .5) * DX, -DX / 2)
+    fig = Figure(figsize=(3.1 * len(panels), 3.7), layout="constrained")
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(1, len(panels))
+    for ax, (title, grid) in zip(axes, panels, strict=True):
+        image = ax.imshow(grid, interpolation="nearest", extent=extent, cmap="viridis",
+                          vmin=bounds[0], vmax=bounds[1])
+        ax.set(title=title, xlabel="Distance (m)")
+    axes[0].set_ylabel("Depth (m)")
+    fig.colorbar(image, ax=list(axes), label="Velocity (m/s)", shrink=.85)
+    fig.savefig(path, dpi=200)
+
+
+def run(model, seed, macro_only=False):
+    torch.set_num_threads(1)
+    truth, initial = load_models(model)
+    grid_bands = () if macro_only else GRID_BANDS
+    frequencies = (*MACRO_BANDS, *grid_bands)
+    maps, progress = [], []
+    with ThreadPoolExecutor(SHOTS) as pool:
+        survey = Survey(truth, seed, pool)
+        details = torch.nn.Parameter(torch.zeros_like(initial))
+        for frequency in frequencies:
+            iterations = MACRO_ITERATIONS if frequency in MACRO_BANDS else GRID_ITERATIONS
+            grid, record = fit_grid_band(initial, details, survey, frequency, iterations)
+            maps.append(grid.numpy().copy())
+            progress.append(record)
+        macro = maps[len(MACRO_BANDS)-1]
+        for grid, stage in zip(maps, progress, strict=True):
+            stage["rmse"] = float((torch.from_numpy(grid)-truth).square().mean().sqrt())
+        settings = dict(method=METHOD_NAME, model=model, noise_seed=seed, noise_db=SNR_DB,
+                        observation_sha256=digest(survey.observed), observation_shots=SHOTS,
+                        result_selection={"pixels": "last_projected_adam_step"},
+                        seconds_scope="band_setup_and_fitting_excluding_reporting",
+                        model_transform="area_resample_whole_input_to_survey_grid",
+                        input_sha256=hashlib.sha256((ROOT / "data" / f"{model}.npy").read_bytes()).hexdigest(),
+                        versions={name: version(name) for name in ("torch", "deepwave", "numpy")},
+                        source_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                       for path in (Path(__file__).resolve(), ROOT / "uv.lock")},
+                        macro_frequencies=MACRO_BANDS, macro_iterations=MACRO_ITERATIONS,
+                        pixel_frequencies=grid_bands, pixel_iterations=GRID_ITERATIONS,
+                        survey=dict(shape=list(SHAPE), dx=DX, dt=DT, nt=NT, n_shots=SHOTS, n_receivers=SHAPE[1],
+                                    source_frequency=SOURCE_HZ, bounds=survey.bounds))
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fZ")
+    directory = ROOT / "outputs" / f"{METHOD_NAME}_{model}_seed{seed}_{stamp}"
+    directory.mkdir(parents=True, exist_ok=False)
+    temp = directory / "result.tmp"
+    with temp.open("wb") as stream:
+        np.savez_compressed(stream, true=truth.numpy(), initial=initial.numpy(), macro=macro, final=maps[-1],
+                            frequencies=frequencies, stage_maps=np.stack(maps), settings=json.dumps(settings),
+                            progress=json.dumps(progress))
+    temp.replace(directory / "result.npz")
+    save_preview(directory / "result.png", truth.numpy(), initial.numpy(), frequencies, maps, survey.bounds)
+    print(f"Saved {directory}", flush=True)
+    return directory
 
 
 if __name__ == "__main__":
-    # Edit this comparison's settings, then press Run.
-    model_name = "marmousi"  # marmousi, bp_salt, overthrust, seam, sigsbee
-    survey = {
-        "shape": (70, 70),       # depth cells, horizontal cells
-        "dx": 10.0,             # cell spacing, metres
-        "n_shots": 5,
-        "n_receivers": None,    # None means one receiver per surface cell
-        "dt": 0.001,            # seconds per sample
-        "nt": 1000,             # samples per recording
-        "source_frequency": 15.0,  # Ricker wavelet peak frequency, Hz
-    }
-    noise_db = 30  # None for clean observations
-    noise_seed = 0
-    frequencies = (6, 9, 13, 20, 30)
-    iterations = 340  # Per frequency
-    torch.set_num_threads(1)
-
-    # Prepare this run entirely in memory from the original model.
-    true = prepare_model(model_name, survey["shape"])
-    survey["bounds"] = (1000.0, max(5500.0, float(true.max())))
-    depth = torch.arange(true.shape[0])[:, None] * survey["dx"]
-    initial = (1500 + 1500 * depth / depth.max()).expand_as(true).clone()
-    model = PixelFWI(initial, survey)
-    for frequency in frequencies:
-        model.validate_cutoff(frequency)
-    observed = model.forward(true, accuracy=8)
-    if noise_db is not None:
-        observed = model.add_noise(observed, noise_db, noise_seed)
-    model.observed = observed
-
-    progress = []
-    for frequency in frequencies:
-        started = perf_counter()
-        losses = model.fit(frequency, iterations=iterations)
-        seconds = perf_counter() - started
-        error = model.velocity().detach() - true
-        progress.append({
-            "stage": "pixels", "frequency": frequency, "loss": losses,
-            "seconds": seconds,
-            "relative_l2": float(error.norm() / true.norm()),
-            "rmse": float(error.square().mean().sqrt()),
-        })
-    final = model.velocity().detach()
-
-    folder = Path(__file__).resolve().parent
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fZ")
-    output = folder / "outputs" / f"pixels_plain_{model_name}_{run_id}"
-    output.mkdir(parents=True, exist_ok=False)
-    settings = {
-        "method": "pixels_plain",
-        "model": model_name, "survey": survey, "noise_db": noise_db, "noise_seed": noise_seed,
-        "frequencies": frequencies, "iterations": iterations,
-        "initial_velocity": [1500.0, 3000.0],
-        "versions": {name: version(name) for name in ("torch", "deepwave", "numpy")},
-    }
-    np.savez_compressed(
-        output / "result.npz", true=true.numpy(), final=final.numpy(),
-        settings=json.dumps(settings), progress=json.dumps(progress),
-    )
-    save_models(true, final, output / "result.png")
-    print(f"Saved {output}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model", choices=sorted(p.stem for p in (ROOT / "data").glob("*.npy")), default="marmousi")
+    parser.add_argument("--noise-seed", type=int, default=2)
+    parser.add_argument("--macro-only", action="store_true", help="stop after 9 Hz")
+    args = parser.parse_args()
+    run(args.model, args.noise_seed, args.macro_only)

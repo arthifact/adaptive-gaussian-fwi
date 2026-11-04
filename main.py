@@ -1,142 +1,192 @@
-"""Edit the experiment settings below, then press Run."""
+"""Fit a Gaussian macro model, freeze it, then refine the velocity on the grid."""
 
 import argparse
-import json
+from contextlib import closing
+from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
 from importlib.metadata import version
+import json
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 import torch
 
+from scripts.make_figures import plot_runs
 from src.data_prepare import prepare_model
 from src.gaussians import GaussianField
 from src.gaussians_fit import fit_gaussians
+from src.method_settings import DEFAULT_BAND_ITERATIONS, GAUSSIAN_COLUMNS, METHOD
 from src.pixels import PixelField, fit_pixels
-from src.simulation import FWI
-from src.plotting import save_models
+from src.simulation import FWI, MINIMUM_NOISE_WINDOW_S, PML_WIDTH_CELLS, PREDICTION_ACCURACY, TAPER_TRANSITION_FRACTION
 
-# Experiment settings.
-model = "marmousi"  # marmousi, bp_salt, overthrust, seam, sigsbee
+# Survey and experiment choices. Gaussian method choices live in src/method_settings.py.
+model = "marmousi"
 survey = {
-    "shape": (70, 70),       # depth cells, horizontal cells
-    "dx": 10.0,             # cell spacing, metres
+    "shape": (70, 70),         # depth cells, horizontal cells
+    "dx": 10.0,               # metres per cell
     "n_shots": 5,
-    "n_receivers": None,    # None means one receiver per surface cell
-    "dt": 0.001,            # seconds per sample
-    "nt": 1000,             # samples per recording
-    "source_frequency": 15.0,  # Ricker wavelet peak frequency, Hz
+    "n_receivers": None,      # one receiver per surface cell
+    "dt": 0.001,              # seconds per sample
+    "nt": 1000,
+    "source_frequency": 15.0,  # Ricker peak frequency, Hz
 }
-noise_db = 30               # None for clean observations
-noise_seed = 0
-gaussian_frequencies = (6, 9)  # Low-pass cutoffs, Hz
+noise_db = 30                  # None uses clean observations.
+noise_seed = 2
+gaussian_frequencies = (6, 9)  # low-pass cutoffs, Hz
+gaussian_iterations = DEFAULT_BAND_ITERATIONS
 pixel_frequencies = (13, 20, 30)
-gaussian_iterations = 325     # Per frequency
 pixel_iterations = 350
-prune_gaussians = True       # Remove Gaussians with amplitude magnitude at or below 5 m/s.
+prune_gaussians = True
+RAMP_M_S = (1500.0, 3000.0)
+MIN_SPEED_M_S = 1000.0
+MIN_UPPER_BOUND_M_S = 5500.0
+OBSERVATION_ACCURACY = 8
+
+
+def prepare_observations(problem, truth, seed):
+    """Generate the synthetic data and record the actual added noise energy in each band."""
+    for frequency in gaussian_frequencies:
+        problem.validate_cutoff(frequency)
+    clean = problem.forward(truth, accuracy=OBSERVATION_ACCURACY)
+    observed = clean if noise_db is None else problem.add_noise(clean, noise_db, seed)
+    problem.observed = observed
+    noise = observed - clean
+    problem.noise_energy = {
+        f: float(problem.lowpass(noise, f).square().sum()) for f in dict.fromkeys(gaussian_frequencies)
+    }
+
+
+def fit_stages(field, problem, truth, *, prune):
+    """Carry the retained parameters from each band into the next band."""
+    backgrounds, progress, parameters = [], [], {}
+    for stage_index, frequency in enumerate(gaussian_frequencies):
+        started = perf_counter()
+        before = problem.forward_shots, problem.adjoint_shots
+        decisions = []
+        losses = fit_gaussians(field, problem, frequency, iterations=gaussian_iterations,
+                               prune=prune, decisions=decisions)
+        snapshot = field.velocity().clamp(*problem.bounds).detach().clone()
+        seconds = perf_counter() - started
+        backgrounds.append((frequency, snapshot))
+        parameters[f"gaussian_params_{stage_index}"] = field.params.detach().numpy().copy()
+        error = snapshot - truth
+        progress.append({
+            "stage": "gaussians", "frequency": frequency, "loss": losses, "decisions": decisions,
+            "forward_shots": problem.forward_shots - before[0], "adjoint_shots": problem.adjoint_shots - before[1],
+            "reporting_forward_shots": problem.n_shots if losses else 0,
+            "post_update_loss": problem.loss(snapshot, frequency) if losses else None,
+            "seconds": seconds, "gaussians": len(field),
+            "birth_threshold": problem.birth_threshold(frequency) if losses else None,
+            "relative_l2": float(error.norm() / truth.norm()),
+            "rmse": float(error.square().mean().sqrt()),
+        })
+    return backgrounds, progress, parameters
+
+
+def refine_grid(background, problem, truth, bands):
+    """Hold the retained macro map fixed and fit one additive correction per cell."""
+    pixels = PixelField(background)
+    models, progress = [], []
+    for frequency in bands:
+        started = perf_counter()
+        before = problem.forward_shots, problem.adjoint_shots
+        losses = fit_pixels(pixels, problem, frequency, iterations=pixel_iterations)
+        snapshot = pixels.velocity().detach().clone()
+        seconds = perf_counter() - started
+        models.append(snapshot)
+        error = snapshot - truth
+        forwards, adjoints = problem.forward_shots - before[0], problem.adjoint_shots - before[1]
+        progress.append(dict(stage="pixels", frequency=frequency, loss=losses,
+                             seconds=seconds,
+                             post_update_loss=problem.loss(snapshot, frequency) if losses else None,
+                             forward_shots=forwards, adjoint_shots=adjoints,
+                             reporting_forward_shots=problem.n_shots if losses else 0,
+                             relative_l2=float(error.norm()/truth.norm()), rmse=float(error.square().mean().sqrt())))
+    return models, progress
+
+
+def run_experiment(model_name, seed, *, macro_only=False, prune=None):
+    """Run the published experiment and return the directory containing the results."""
+    torch.set_num_threads(1)  # Each source shot already runs in its own worker.
+    if prune is None:
+        prune = prune_gaussians
+    truth = prepare_model(model_name, survey["shape"])
+    # These bounds use the synthetic reference and must be disclosed with the results.
+    settings_survey = dict(survey, bounds=(MIN_SPEED_M_S, max(MIN_UPPER_BOUND_M_S, float(truth.max()))),
+                           surface_velocity=float(truth[0].max()))
+    depth = torch.arange(truth.shape[0], dtype=truth.dtype, device=truth.device)[:, None] * settings_survey["dx"]
+    top, bottom = RAMP_M_S
+    initial = (top + (bottom - top) * depth / depth.max()).expand_as(truth).clone()
+    field = GaussianField(initial, settings_survey["dx"])
+    grid_bands = () if macro_only else pixel_frequencies
+    with closing(FWI(settings_survey)) as problem:
+        for frequency in grid_bands:
+            problem.validate_cutoff(frequency)
+        prepare_observations(problem, truth, seed)
+        observation_hash = hashlib.sha256(problem.observed.detach().contiguous().numpy().tobytes()).hexdigest()
+        backgrounds, progress, parameters = fit_stages(field, problem, truth, prune=prune)
+        macro = field.velocity().clamp(*problem.bounds).detach()
+        pixels, grid_progress = refine_grid(macro, problem, truth, grid_bands)
+        progress.extend(grid_progress)
+        noise_energy = problem.noise_energy
+    final = pixels[-1] if pixels else macro
+
+    root = Path(__file__).resolve().parent
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fZ")
+    output = root / "outputs" / f"adaptive_{model_name}_seed{seed}_{run_id}"
+    output.mkdir(parents=True, exist_ok=False)
+    settings = {
+        "method": "gaussian_background_pixels" if grid_bands else "adaptive_gaussian_macro",
+        "placement": "signed_region_moments", "observation_sha256": observation_hash,
+        "gaussian_columns": GAUSSIAN_COLUMNS, "gaussian_method_settings": asdict(METHOD),
+        "region_relative_floor": METHOD.bridge_fraction,
+        "birth_amplitude_rule": "lowest_measured_loss_probe_wins_ties",
+        "model": model_name, "survey": settings_survey, "noise_db": noise_db, "noise_seed": seed,
+        "noise_energy": noise_energy, "noise_energy_source": "synthetic_added_noise",
+        "observation_accuracy": OBSERVATION_ACCURACY, "prediction_accuracy": PREDICTION_ACCURACY,
+        "pml_width_cells": PML_WIDTH_CELLS, "lowpass_transition_fraction": TAPER_TRANSITION_FRACTION,
+        "minimum_noise_window_s": MINIMUM_NOISE_WINDOW_S,
+        "birth_threshold_method": "sampled_filter_power", "gaussian_pruning": prune,
+        "pruning_rule": "loss_checked_weak_batch",
+        "gaussian_frequencies": gaussian_frequencies, "gaussian_iterations": gaussian_iterations,
+        "pixel_frequencies": grid_bands, "pixel_iterations": pixel_iterations,
+        "initial_velocity": RAMP_M_S,
+        "result_selection": {"gaussians": "best_measured_loss_plus_complexity_per_band",
+                             "pixels": "last_projected_adam_step"},
+        "seconds_scope": "band_setup_and_fitting_excluding_reporting",
+        "model_transform": "area_resample_whole_input_to_survey_grid",
+        "input_sha256": hashlib.sha256((root / "data" / f"{model_name}.npy").read_bytes()).hexdigest(),
+        "versions": {name: version(name) for name in ("torch", "deepwave", "numpy")},
+        "source_sha256": {
+            str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (root / "main.py", root / "scripts" / "make_figures.py", root / "uv.lock", *sorted((root / "src").glob("*.py")))
+        },
+    }
+    saved = torch.stack([grid for _, grid in backgrounds]) if backgrounds else truth.new_empty((0, *truth.shape))
+    saved_pixels = torch.stack(pixels) if pixels else truth.new_empty((0, *truth.shape))
+    temp = output / "result.tmp"
+    with temp.open("wb") as stream:
+        np.savez_compressed(stream, true=truth.numpy(), initial=initial.numpy(), macro=macro.numpy(),
+                            final=final.numpy(), gaussian_frequencies=gaussian_frequencies,
+                            gaussian_backgrounds=saved.numpy(), pixel_frequencies=grid_bands,
+                            pixel_models=saved_pixels.numpy(), settings=json.dumps(settings),
+                            progress=json.dumps(progress), **parameters)
+    temp.replace(output / "result.npz")
+    plot_runs([output])
+    print(f"Saved {output}")
+    return output
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=model)
+    data_dir = Path(__file__).resolve().parent / "data"
+    parser.add_argument("--model", choices=sorted(path.stem for path in data_dir.glob("*.npy")), default=model,
+                        help="velocity model from data/")
     parser.add_argument("--noise-seed", type=int, default=noise_seed)
-    parser.add_argument("--pruning", action=argparse.BooleanOptionalAction, default=prune_gaussians)
+    parser.add_argument("--macro-only", action="store_true", help="stop after the Gaussian bands")
+    parser.add_argument("--pruning", action=argparse.BooleanOptionalAction, default=prune_gaussians,
+                        help="enable or disable loss-checked weak-atom pruning")
     args = parser.parse_args()
-    model, noise_seed, prune_gaussians = args.model, args.noise_seed, args.pruning
-
-    # Prepare our survey and observations.
-    torch.set_num_threads(1)  # Shots already run in parallel.
-    true = prepare_model(model, survey["shape"])
-    # Cover propagation speeds throughout the selected model, including buried layers.
-    survey["bounds"] = (1000.0, max(5500.0, float(true.max())))
-    survey["surface_velocity"] = float(true[0].max())
-    problem = FWI(survey)
-    for frequency in (*gaussian_frequencies, *pixel_frequencies):
-        problem.validate_cutoff(frequency)
-    clean = problem.forward(true, accuracy=8)
-    observed = clean
-    if noise_db is not None:
-        observed = problem.add_noise(clean, noise_db, noise_seed)
-    problem.observed = observed
-    # Retain only the added-noise energy in each Gaussian frequency band.
-    noise = observed - clean
-    problem.noise_energy = {
-        frequency: float(problem.lowpass(noise, frequency).square().sum())
-        for frequency in dict.fromkeys(gaussian_frequencies)
-    }
-    del clean, noise
-
-    # Start from a 1500–3000 m/s depth ramp.
-    depth = torch.arange(true.shape[0])[:, None] * survey["dx"]
-    initial = (1500 + 1500 * depth / depth.max()).expand_as(true).clone()
-
-    # Keep a snapshot after each Gaussian frequency.
-    gaussians = GaussianField(initial, survey["dx"])
-    gaussian_backgrounds = []
-    gaussian_params = {}
-    progress = []
-    for stage_index, frequency in enumerate(gaussian_frequencies):
-        started = perf_counter()
-        losses = fit_gaussians(gaussians, problem, frequency, iterations=gaussian_iterations, prune=prune_gaussians)
-        seconds = perf_counter() - started
-        snapshot = gaussians.velocity().clamp(*problem.bounds).detach().clone()
-        gaussian_backgrounds.append((frequency, snapshot))
-        # Stage indices preserve separate parameter rows for repeated cutoffs.
-        gaussian_params[f"gaussian_params_{stage_index}"] = gaussians.params.detach().numpy().copy()
-        error = snapshot - true
-        progress.append({
-            "stage": "gaussians", "frequency": frequency, "loss": losses,
-            "post_update_loss": problem.loss(snapshot, frequency) if losses else None,
-            "seconds": seconds, "gaussians": len(gaussians),
-            "birth_threshold": problem.birth_threshold(frequency) if gaussian_iterations else None,
-            "relative_l2": float(error.norm() / true.norm()),
-            "rmse": float(error.square().mean().sqrt()),
-        })
-    background = gaussians.velocity().clamp(*problem.bounds).detach()
-
-    # Pixel details on the fixed background.
-    pixels = PixelField(background)
-    pixel_models = []
-    for frequency in pixel_frequencies:
-        started = perf_counter()
-        losses = fit_pixels(pixels, problem, frequency, iterations=pixel_iterations)
-        seconds = perf_counter() - started
-        snapshot = pixels.velocity().detach()
-        pixel_models.append(snapshot)
-        error = snapshot - true
-        progress.append({
-            "stage": "pixels", "frequency": frequency, "loss": losses,
-            "post_update_loss": problem.loss(snapshot, frequency) if losses else None,
-            "seconds": seconds,
-            "relative_l2": float(error.norm() / true.norm()),
-            "rmse": float(error.square().mean().sqrt()),
-        })
-    final = pixels.velocity().detach()
-
-    # Keep each completed run together: one figure and one compressed results file.
-    root = Path(__file__).resolve().parent
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fZ")
-    output = root / "outputs" / f"{model}_{run_id}"
-    output.mkdir(parents=True, exist_ok=False)
-    settings = {
-        "method": "gaussian_background_pixels",
-        "model": model, "survey": survey, "noise_db": noise_db, "noise_seed": noise_seed,
-        "noise_energy": problem.noise_energy, "noise_energy_source": "synthetic_added_noise",
-        "birth_threshold_method": "sampled_filter_power", "gaussian_pruning": prune_gaussians,
-        "gaussian_frequencies": gaussian_frequencies, "pixel_frequencies": pixel_frequencies,
-        "gaussian_iterations": gaussian_iterations, "pixel_iterations": pixel_iterations,
-        "initial_velocity": [1500.0, 3000.0],
-        "versions": {name: version(name) for name in ("torch", "deepwave", "numpy")},
-    }
-    empty_stages = true.new_empty((0, *true.shape))
-    saved_backgrounds = torch.stack([grid for _, grid in gaussian_backgrounds]) if gaussian_backgrounds else empty_stages
-    saved_pixels = torch.stack(pixel_models) if pixel_models else empty_stages
-    np.savez_compressed(
-        output / "result.npz",
-        true=true.numpy(), initial=initial.numpy(), final=final.numpy(),
-        gaussian_frequencies=gaussian_frequencies,
-        gaussian_backgrounds=saved_backgrounds.numpy(), pixel_models=saved_pixels.numpy(),
-        settings=json.dumps(settings), progress=json.dumps(progress), **gaussian_params,
-    )
-    save_models(true, gaussian_backgrounds, final, output / "result.png")
-    print(f"Saved {output}")
+    run_experiment(args.model, args.noise_seed, macro_only=args.macro_only, prune=args.pruning)

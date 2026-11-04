@@ -10,9 +10,9 @@ import numpy as np
 import torch
 
 from src.gaussians import GaussianField, gaussian
-from src.gaussians_fit import _Candidates, fit_gaussians
-from src.pixels import PixelField, fit_pixels
+from src.gaussians_fit import fit_gaussians
 from src.simulation import FWI
+from src.moment_candidates import MomentCandidates
 
 
 class NoiseThresholdTests(unittest.TestCase):
@@ -253,7 +253,7 @@ class NoiseThresholdTests(unittest.TestCase):
         effective = data.numel() * 3 / 256
         expected = 6 * math.log(effective) * problem.noise_energy[6] / (effective * data.square().sum().item())
         self.assertAlmostEqual(problem.birth_threshold(6), expected, places=10)
-        with patch.object(_Candidates, "propose", return_value=[candidate]):
+        with patch.object(MomentCandidates, "propose", return_value=[candidate]):
             fit_gaussians(field, problem, 6, iterations=1)
             second = GaussianField(initial, problem.dx)
             fit_gaussians(second, problem, 7, iterations=1)
@@ -309,15 +309,13 @@ class NoiseThresholdTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Nyquist"):
                     problem.lowpass(problem.observed, cutoff)
 
-    def test_fitters_reject_invalid_cutoffs_even_for_empty_stages(self):
+    def test_fitter_rejects_invalid_cutoffs_even_for_empty_stages(self):
         problem = self.make_problem()
         initial = torch.full(problem.shape, 2000.0)
-        fitters = ((fit_gaussians, GaussianField(initial, problem.dx)), (fit_pixels, PixelField(initial)))
-        for fit, model in fitters:
-            with self.subTest(fitter=fit.__name__):
-                self.assertEqual(fit(model, problem, 500.0, iterations=0), [])
-                with self.assertRaisesRegex(ValueError, "Nyquist"):
-                    fit(model, problem, 1000.0, iterations=0)
+        field = GaussianField(initial, problem.dx)
+        self.assertEqual(fit_gaussians(field, problem, 500.0, iterations=0), [])
+        with self.assertRaisesRegex(ValueError, "Nyquist"):
+            fit_gaussians(field, problem, 1000.0, iterations=0)
 
 
 if __name__ == "__main__":

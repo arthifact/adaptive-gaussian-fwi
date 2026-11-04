@@ -1,113 +1,53 @@
-# GaussianFWI
+# Adaptive Gaussian FWI
 
-Gaussian background + plain pixel refinement using Deepwave.
+This synthetic 2-D acoustic experiment fits an adaptive Gaussian velocity background at 6 and 9 Hz, freezes the retained 9 Hz map, then fits one additive velocity correction per grid cell at 13, 20 and 30 Hz. The reported comparisons use spatially rescaled versions of Marmousi and Overthrust.
 
-The original `.npy` models are included in `data/`.
+## Run
 
-Edit the settings at the top of `main.py` and press **Run**.
-Set `noise_db = None` for clean observations.
-Run the regression tests with `uv run --frozen python -m unittest discover -q`.
-The source peak frequency and stage cutoffs must be positive and no higher than `0.5 / dt` Hz
-(500 Hz at the default 1 ms sample interval). A cutoff exactly at Nyquist is valid.
-For a matched pruning comparison, run `python main.py --model overthrust --noise-seed 1`
-and repeat with `--no-pruning`. The default removes Gaussians with amplitudes
-at or below 5 m/s in magnitude at growth rounds.
+Use Python 3.12 and uv from the project root.
 
-The pruning comparison uses 70 × 70 Marmousi and Overthrust models at 10 m
-spacing, five training shots, 30 dB noise and seeds 0 and 1. The four held-out
-shots are at horizontal grid indices 8, 26, 43 and 61, with the same receivers
-as the training survey. Held-out loss is the sum of squared filtered residuals
-divided by the sum of squared filtered clean recordings.
-Clean reference recordings use an eighth-order spatial stencil and predictions
-use fourth order.
+```sh
+uv sync --frozen
+uv run --frozen python -m unittest discover -q
+uv run --frozen python main.py --model marmousi --noise-seed 2
+```
 
-Each pair below lists the 5 m/s cutoff first and pruning disabled second.
-The 9 Hz results are from the Gaussian background. The 30 Hz results and
-final velocity RMSE are from the pixel refinement.
+`--macro-only` stops after 9 Hz. The default enables loss-checked pruning. Use `--no-pruning` for the matching ablation. The acquisition and band schedule are in [main.py](main.py).
 
-| Model | Noise seed | Gaussians at 9 Hz | Held-out 9 Hz loss (×10⁻³) | Held-out 30 Hz loss (×10⁻³) | Final velocity RMSE (m/s) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Marmousi | 0 | 30 / 75 | 1.955 / 2.423 | 1.060 / 1.045 | 506.8 / 598.6 |
-| Marmousi | 1 | 28 / 65 | 1.280 / 2.858 | 1.051 / 1.069 | 579.0 / 465.7 |
-| Overthrust | 0 | 30 / 47 | 0.510 / 0.692 | 0.446 / 0.444 | 315.2 / 313.7 |
-| Overthrust | 1 | 46 / 60 | 0.613 / 0.586 | 0.436 / 0.435 | 321.3 / 327.3 |
+## Survey and model scale
 
-The cutoff kept fewer Gaussians in all four comparisons. Held-out waveform
-loss improved in three at 9 Hz and one at 30 Hz. Final velocity RMSE improved
-in two. The default reflects the preference for a compact Gaussian background.
+The loader area-resamples the **whole** input array to 70 depth cells by 70 horizontal cells. Both computational axes have 10 m spacing and span 690 m between cell centres. Original Marmousi spans 9.2 km horizontally and 3 km in depth. This transformation changes dips, feature sizes and their relation to wavelength. The synthetic recordings, RMSE calculations and plotted metre coordinates refer to this new square domain. Earth-model sources, units, slice definitions, notices and checksums are in [data/README.md](data/README.md). [Original Marmousi dimensions, Figure 1](https://mcee.ou.edu/aaspi/publications/2006/martin_etal_TLE2006.pdf)
 
-- `src/` — our method.
-- `data/` — original velocity models: `.npy`, m/s, `(depth, x)`.
-- `comparisons/` — independent methods; edit and run each file separately.
+Five sources and 70 receivers lie on the top model row. The simulation uses absorbing boundaries on all sides, a 15 Hz Ricker source, a 1 ms sample interval and 1,000 time samples. Clean observations use an eighth-order spatial stencil. Predictions use fourth order. Seeded source-shaped Gaussian noise is scaled to 30 dB over the full data volume. Each stage uses a low-pass waveform loss normalized by the filtered observed energy. The final filter tapers from 21 to 30 Hz. An onshore field study also used a 30 Hz finishing band in a different acquisition and inversion workflow. [Reta-Tang et al., 2023](https://doi.org/10.1190/tle42030190.1)
 
-Each run resizes the model and generates shots in memory. Use matching settings
-and noise seeds when comparing methods.
+Two inputs use information available in this synthetic experiment. The upper velocity bound is the larger of 5,500 m/s and the maximum of the rescaled truth. The survey also stores its maximum surface speed. Gaussian growth uses the exact added noise, obtained by subtracting the simulated clean traces, to estimate noise energy separately at 6 and 9 Hz. The 0.30 s pre-arrival fallback has no usable window on the default survey. The filtered effective-sample count and per-atom charge are heuristics.
 
-The low-to-high frequency schedule follows multiscale waveform inversion.
-Recoverable spatial scales depend on frequency and acquisition geometry. Here
-a quarter of the local wavelength sets the minimum proposed Gaussian width
-(one standard deviation). Later velocity updates can change that wavelength.
-[Bunks et al. (1995)](https://doi.org/10.1190/1.1443880) · [Sirgue and Pratt (2004)](https://doi.org/10.1190/1.1649391)
+## Fitting and selection
 
-Chen et al. used a fixed Gaussian basis to estimate long-wavelength FWI
-starting models. Here the centers, widths, orientations and amplitudes can
-all change during fitting. [Chen et al. (2020)](https://doi.org/10.1190/segam2020-3418905.1)
+Each low-frequency band has 325 gradient evaluations. Every tenth iteration, starting at zero, proposes shapes from connected, same-sign gradient regions. Cells at or below 1% of their region’s peak are cut before computing its weighted centre and covariance. The lagged local width floor is a quarter wavelength or one grid cell, whichever is larger. Centres may move outside the grid. The Gaussian parameters describe basis functions for the model.
 
-The fitter ranks Gaussian shapes using the velocity gradient and source
-illumination. Before adding a row, it evaluates the nonlinear waveform loss on
-the bounded grid rebuilt from the proposed parameters. A birth must reduce
-that loss beyond roundoff and clear the noise threshold.
+For each proposed shape, the initial amplitude is 5% of local speed with the downhill sign. The fitter measures the bounded waveform loss for the probe and, when distinct, the capped quadratic estimate. It chooses the lower measured loss and keeps the probe on a tie. The gain must cover the component charge and exceed roundoff. Gaussian stage selection retains the best measured loss plus the per-atom charge among the explored states. Each grid band takes 350 Adam updates and returns its last bounded update. The loss history is measured before each update. The endpoint loss is measured on the saved grid. Related FWI work has also used adaptive basis parameterizations. [Adaptive meshless FWI](https://www.sciencedirect.com/science/article/pii/S0955799717300073)
 
-Gaussian growth uses the known added-noise energy in each frequency band, with
-zero added noise for clean runs. Schwarz's model dimension penalty motivates
-charging for six new parameters. For these filtered traces, we approximate the
-effective sample count by scaling the recorded sample count by the mean squared
-filter weight on the padded FFT grid. This approximation treats traces as
-independent. [Schwarz (1978)](https://doi.org/10.1214/aos/1176344136)
+## Paired comparisons
 
-Positive frequencies and their negative-frequency partners contribute equally.
-DC and Nyquist each contribute once. [One-sided spectral power](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html)
+The fixed-Gaussian control adjusts amplitudes on prescribed isotropic lattices at 6 and 9 Hz and uses the same pixel refinement thereafter. Plain and smoothed-gradient pixel controls fit cells in all five bands. At 9 Hz count six trainable values per retained adaptive atom, one per fixed atom, or one per grid cell. Report model error, held-out waveform error and computational work separately. For a full rerun of the reported comparisons:
 
-Identical sampled filters and noise energies therefore yield the same threshold.
-A noisy band needs more than one effective sample for this calculation.
+```sh
+for model in marmousi overthrust; do
+  for seed in 2 3; do
+    for program in main.py comparisons/fixed_gaussians.py comparisons/pixels_plain.py comparisons/pixels_smoothed.py; do
+      uv run --frozen python "$program" --model "$model" --noise-seed "$seed"
+    done
+  done
+done
+```
 
-New archives record the method as `sampled_filter_power`. To replay its
-threshold, assign the same recordings to `problem.observed`,
-then set `problem.noise_energy = settings["noise_energy"]` from the decoded run settings.
-For older archives without `birth_threshold_method`, use the Gaussian stage's
-recorded `birth_threshold` when available.
-Changing the recording samples invalidates the supplied energies for all bands.
-For recordings aligned to shot time, the fitter can estimate noise before the
-first arrival. Each trace contributes only whole sample intervals before its
-source–receiver distance divided by the maximum propagation speed. The fitter
-uses the larger of the survey's upper velocity bound and surface speed. This
-ceiling must cover the whole medium because a faster buried layer can send
-energy to a receiver ahead of the direct surface arrival. [Layered travel times](https://earthweb.ess.washington.edu/vidale/Reprints/BSSA/1988_Vidale.pdf) · [Seismic noise windows](https://doi.org/10.1007/s10518-017-0131-9)
+[Study results and raw numerical archives](results/README.md) accompany this version. To score the archived comparisons:
 
-The fitter requires at least 0.3 s and two eligible samples on a trace.
-Supply band noise energies for the current recordings if no trace qualifies,
-the speed ceiling is uncertain, or a time shift or filter has moved signal
-ahead of its physical arrival.
+```sh
+uv run --frozen python -m scripts.score_comparison results/runs/*/*.npz --output comparison.csv
+```
 
-Each `main.py` run saves two files in a new folder.
+Each run writes a timestamped directory in `outputs/` with `result.npz` and an unsmoothed velocity preview. The archive records input and observation hashes, software versions, source hashes, selection rules and wave counts. Band timers include setup and fitting, including any endpoint evaluation used for model selection. Separate forward calls used only to report a score are excluded. Timings from concurrent jobs are unsuitable for a wall-clock speed comparison. Use [scripts/make_figures.py](scripts/make_figures.py) to redraw an adaptive preview.
 
-- `result.png` — velocity models at 300 dpi; no window opens.
-- `result.npz` — reference, initial and reconstructed models, settings,
-  loss histories, timings and errors. For Gaussian stage index `i` (starting
-  at zero), `gaussian_params_<i>` stores each surviving Gaussian as
-  `[z_m, x_m, log(width_along_angle_m), log(perpendicular_width_m), angle_rad, amplitude_m/s]`.
-  The angle is measured from horizontal toward depth. The first axis starts
-  as the longer one, but either width can become larger during fitting.
-  Rebuild the field on `initial` with the survey spacing and clip it to the
-  survey bounds to reproduce `gaussian_backgrounds[i]`. Stage indices also
-  distinguish repeated frequencies. Pixel stage grids are in `pixel_models`.
-  Each progress entry keeps the pre-update `loss` history and a separately
-  measured `post_update_loss` on the resulting grid (null for zero updates).
-
-Our results go in `outputs/`. The independent pixel comparisons save their
-reference and final grids, settings and per-stage metrics in `comparisons/outputs/`.
-
-Data credits: BP (BP 2004), IFP (Marmousi), SEG/EAGE (Overthrust),
-SMAART (Sigsbee). SEAM Open Data © 2013 SEG Advanced Modeling Corporation
-([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)); its P-wave
-velocity slice was converted from SEG-Y to NumPy.
+The optional Sigsbee input can be recreated locally from the distributor’s SEG-Y. See the [checksum-verified import instructions](data/README.md#optional-sigsbee-input).

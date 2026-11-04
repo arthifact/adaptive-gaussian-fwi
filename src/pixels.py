@@ -1,5 +1,7 @@
 """A fixed background plus pixel corrections, fitted one frequency at a time."""
 
+import math
+
 import torch
 
 
@@ -15,8 +17,8 @@ class PixelField:
 def fit_pixels(model, problem, frequency, iterations=350):
     """Fit one frequency with fresh Adam state; return the loss before each update."""
     problem.validate_cutoff(frequency)
-    if iterations < 0:
-        raise ValueError("iterations must be nonnegative")
+    if type(iterations) is not int or iterations < 0:
+        raise ValueError("iterations must be a nonnegative integer")
     losses = []
     if iterations == 0:
         return losses
@@ -24,6 +26,8 @@ def fit_pixels(model, problem, frequency, iterations=350):
     for _ in range(iterations):
         velocity = model.velocity().detach()
         loss, gradient = problem.gradient(velocity, frequency)
+        if not math.isfinite(loss) or not torch.isfinite(gradient).all():
+            raise FloatingPointError("Non-finite pixel loss or gradient")
         losses.append(loss)
         optimizer.zero_grad()
         model.details.grad = gradient

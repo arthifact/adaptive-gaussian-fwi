@@ -3,9 +3,20 @@
 import hashlib
 import math
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 import deepwave
 import torch
+
+from .method_settings import PARAMETERS_PER_GAUSSIAN
+
+# Wave solver and signal-processing conventions for these experiments.
+PREDICTION_ACCURACY = 4
+PML_WIDTH_CELLS = 20
+RICKER_PEAK_PERIODS = 1.5
+MAX_SHOT_WORKERS = 8
+TAPER_TRANSITION_FRACTION = 0.30
+MINIMUM_NOISE_WINDOW_S = 0.30
 
 
 class FWI:
@@ -43,10 +54,16 @@ class FWI:
         self.receivers = torch.zeros(1, n_receivers, 2, dtype=torch.long)
         self.receivers[0, :, 1] = torch.linspace(0, nx - 1, n_receivers).round().long()
         self.wavelet = deepwave.wavelets.ricker(
-            self.source_frequency, self.nt, self.dt, 1.5 / self.source_frequency,
+            self.source_frequency, self.nt, self.dt, RICKER_PEAK_PERIODS / self.source_frequency,
         ).reshape(1, 1, self.nt)
-        self._pool = ThreadPoolExecutor(min(self.n_shots, 8))
+        self._pool = ThreadPoolExecutor(min(self.n_shots, MAX_SHOT_WORKERS))
+        self._count_lock = Lock()
+        self.forward_shots = self.adjoint_shots = 0
         self.observed = None
+
+    def close(self):
+        """Finish pending shot work and release this survey's worker threads."""
+        self._pool.shutdown()
 
     @property
     def observed(self):
@@ -81,18 +98,20 @@ class FWI:
         self._noise_signature = self._recording_signature()
         self._noise_energy = energies
 
-    def simulate(self, velocity, shot, receivers=None, accuracy=4):
+    def simulate(self, velocity, shot, receivers=None, accuracy=PREDICTION_ACCURACY):
+        with self._count_lock:
+            self.forward_shots += 1
         if receivers is None:
             receivers = self.receivers
         result = deepwave.scalar(
             velocity, self.dx, self.dt, source_amplitudes=self.wavelet.to(velocity),
             source_locations=self.sources[shot:shot + 1], receiver_locations=receivers,
-            accuracy=accuracy, pml_width=20, pml_freq=self.source_frequency, max_vel=self.bounds[1],
+            accuracy=accuracy, pml_width=PML_WIDTH_CELLS, pml_freq=self.source_frequency, max_vel=self.bounds[1],
         )
         # Deepwave returns receiver recordings last; remove the single-shot axis.
         return result[-1][0]
 
-    def forward(self, velocity, accuracy=4):
+    def forward(self, velocity, accuracy=PREDICTION_ACCURACY):
         """Generate clean recordings [shot, receiver, time]."""
         # Detach before starting worker threads; no_grad itself is thread-local.
         velocity = velocity.detach()
@@ -110,7 +129,10 @@ class FWI:
         wavelet_spectrum = torch.fft.rfft(self.wavelet[0, 0].to(shots), n_fft).abs()
         noise = torch.fft.irfft(white_spectrum * wavelet_spectrum, n_fft)
         noise = noise[..., :shots.shape[-1]]
-        scaled_noise = noise * shots.norm() / noise.norm()
+        noise_norm = noise.norm()
+        if not bool(torch.isfinite(noise_norm)) or noise_norm == 0:
+            raise ValueError("The source spectrum produced zero or non-finite noise energy")
+        scaled_noise = noise * shots.norm() / noise_norm
         return shots + scaled_noise / 10 ** (snr_db / 20)
 
     def validate_cutoff(self, frequency):
@@ -127,7 +149,9 @@ class FWI:
         dtype = recordings.dtype if recordings.is_floating_point() else torch.get_default_dtype()
         frequencies = torch.fft.rfftfreq(2 * recordings.shape[-1], self.dt, dtype=dtype, device=recordings.device)
         # Fade smoothly from 70% of the cutoff to zero at the cutoff.
-        rolloff = ((frequencies - 0.7 * frequency) / (0.3 * frequency)).clamp(0, 1)
+        transition = TAPER_TRANSITION_FRACTION * frequency
+        passband_end = (1 - TAPER_TRANSITION_FRACTION) * frequency
+        rolloff = ((frequencies - passband_end) / transition).clamp(0, 1)
         taper = torch.cos(0.5 * torch.pi * rolloff)**2
         taper[frequencies >= frequency] = 0.0  # cos(pi/2) leaves a roundoff residue.
         taper[0] = 1.0  # DC is always passed, even for a sub-bin cutoff.
@@ -175,6 +199,8 @@ class FWI:
             return loss.detach(), shot_velocity.grad
 
         losses, gradients = zip(*self._pool.map(shot_gradient, range(self.n_shots)))
+        with self._count_lock:
+            self.adjoint_shots += len(gradients)
         return float(sum(losses) / data_energy), sum(gradients) / data_energy
 
     def illumination(self, velocity, frequency):
@@ -194,6 +220,8 @@ class FWI:
         with torch.no_grad():
             energies = self._pool.map(shot_energy, range(self.n_shots))
             energy = sum(energies).reshape(self.shape) / self.dt**4
+            # The squared v-to-slowness-squared derivative contributes 4/v**6.
+            # The common factor 4 cancels in the normalized illumination score.
             return energy / velocity.clamp(*self.bounds)**6
 
     def _noise_variance(self, frequency):
@@ -221,7 +249,7 @@ class FWI:
         max_speed = max(self.bounds[1], self.surface_velocity)
         quiet_samples = (offsets / (max_speed * self.dt)).floor().clamp_max(self.nt).long()
         power, window_energy = torch.zeros_like(weights), 0.0
-        minimum_samples = max(2, math.ceil(0.3 / self.dt))
+        minimum_samples = max(2, math.ceil(MINIMUM_NOISE_WINDOW_S / self.dt))
         for shot, receiver in zip(*torch.where(quiet_samples >= minimum_samples)):
             sample_count = int(quiet_samples[shot, receiver])
             window = torch.hann_window(sample_count, dtype=weights.dtype, device=weights.device)
@@ -252,5 +280,5 @@ class FWI:
                 f"Too few effective samples ({effective_samples:g}) for a noisy Gaussian growth decision "
                 f"at {frequency:g} Hz. Use a longer recording or a wider band."
             )
-        penalty = 6 * math.log(effective_samples)
+        penalty = PARAMETERS_PER_GAUSSIAN * math.log(effective_samples)
         return penalty * noise_variance * (sample_count / effective_samples) / float(data_energy)
