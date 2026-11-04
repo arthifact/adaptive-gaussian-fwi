@@ -1,10 +1,12 @@
 """Guard the publication table against accidentally mixing experiments or endpoints."""
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
+from scripts.tabulate_matched_work import tabulate
 from scripts.match_macro_work import fixed_iterations
 from scripts.score_comparison import METHODS, compare_pair, score
 
@@ -17,6 +19,15 @@ class PaperComparisonTests(unittest.TestCase):
             self.assertGreater((2*steps+3)*5, target)
         with self.assertRaises(ValueError):
             fixed_iterations(4, 5)
+
+    def test_matched_table_rejects_an_incomplete_set_of_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            case = results / "runs" / "marmousi-seed2"
+            case.mkdir(parents=True)
+            (case / "adaptive.npz").touch()
+            with self.assertRaisesRegex(ValueError, "one matched control"):
+                tabulate(results)
 
     def test_duplicate_method_is_rejected_before_solving(self):
         settings = dict(method=METHODS[0], model="marmousi", noise_seed=2)
