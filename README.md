@@ -30,7 +30,7 @@ For each proposed shape, the initial amplitude is 5% of local speed with the dow
 
 ## Paired comparisons
 
-The fixed-Gaussian control adjusts amplitudes on prescribed isotropic lattices at 6 and 9 Hz and uses the same pixel refinement thereafter. Plain and smoothed-gradient pixel controls fit cells in all five bands. At 9 Hz count six trainable values per retained adaptive atom, one per fixed atom, or one per grid cell. Report model error, held-out waveform error and computational work separately. For a full rerun of the reported comparisons:
+The fixed-Gaussian control adjusts amplitudes on prescribed isotropic lattices at 6 and 9 Hz and uses the same pixel refinement thereafter. Plain and smoothed-gradient pixel controls fit cells in all five bands. At 9 Hz count six trainable values per retained adaptive atom, one per fixed atom, or one per grid cell. Report model error, held-out waveform error and computational work separately. The following commands rerun the reported comparisons.
 
 ```sh
 for model in marmousi overthrust; do
@@ -42,11 +42,13 @@ for model in marmousi overthrust; do
 done
 ```
 
-[Study results and raw numerical archives](results/README.md) accompany this version. To score the archived comparisons:
+[Study results and raw numerical archives](results/README.md) accompany this version. Score the archived comparisons with the following command.
 
 ```sh
 uv run --frozen python -m scripts.score_comparison results/runs/*/*.npz --output comparison.csv
 ```
+
+The [study protocol](results/README.md) also describes the fixed-lattice low-frequency runs with a matched shot-propagation budget.
 
 Each run writes a timestamped directory in `outputs/` with `result.npz` and an unsmoothed velocity preview. The archive records input and observation hashes, software versions, source hashes, selection rules and wave counts. Band timers include setup and fitting, including any endpoint evaluation used for model selection. Separate forward calls used only to report a score are excluded. Timings from concurrent jobs are unsuitable for a wall-clock speed comparison. Use [scripts/make_figures.py](scripts/make_figures.py) to redraw an adaptive preview.
 

@@ -4,7 +4,7 @@ The experiment uses two rescaled velocity models (Marmousi and Overthrust), two 
 
 ## Reproduce the metrics
 
-The `runs/<model>-seed<seed>/` directories contain the numerical archives from the unmodified command-line programs. To recompute `comparison.csv` from the project root:
+The `runs/<model>-seed<seed>/` directories contain the numerical archives from the unmodified command-line programs. Run the following command from the project root to recompute `comparison.csv`.
 
 ```sh
 uv run --frozen python -m scripts.score_comparison results/runs/*/*.npz --output comparison.csv
@@ -15,3 +15,14 @@ The scorer rejects duplicate or missing methods, mismatched observations, input 
 Training sources occupy horizontal indices 0, 17, 34, 52 and 69. Validation sources occupy 8, 26, 43 and 61. All receivers are on the top row. Validation uses clean synthetic recordings generated with an eighth-order spatial stencil. Fourth-order predictions are scored by the squared norm of the low-pass residual divided by the squared norm of the filtered clean data. This tests interpolation to four unused source locations on the same earth model.
 
 The 20 Hz checkpoint shows the effect of ending grid refinement one band earlier. The `heldout_30_hz` column evaluates every checkpoint at a common 30 Hz cutoff. The `fine_heldout_loss` column repeats the stage-band prediction on a 5 m grid. Bilinear interpolation aligns the 139 × 139 grid with the original 70 × 70 cell centres. Source and receiver positions and absorbing-layer thickness in metres are preserved. Both truth and recovered maps are resampled the same way. `fine_truth_loss` and `truth_heldout_loss` record the stencil discrepancy on each mesh. The fine-grid results are forward sensitivity checks on the recovered maps. The inversion uses 10 m spacing.
+
+
+## Matched-work macro control
+
+For each adaptive run, a separate fixed-lattice inversion gets the adaptive method’s observed combined fitting forward and adjoint count at each of 6 and 9 Hz. The fixed control spends one extra forward per shot to test its endpoint and one forward plus one adjoint per shot for each update. The script buys the largest integer number of updates within that band’s budget. It can underspend by fewer than ten shot propagations. No RMSE or held-out score enters this allocation.
+
+The lattice, optimizer, initial ramp, seeded observations and retained-state rule are the same as in the standard fixed control. Matching the sum treats each propagation as one unit. Forward and adjoint counts are also reported separately. Different receiver layouts and recording requirements can change the actual cost per shot. The comparison tests low-frequency recovery at comparable nominal work. Both geometry and placement still differ between parameterizations.
+
+```sh
+uv run --frozen python -m scripts.match_macro_work results/runs/marmousi-seed2/adaptive.npz --output fixed-matched-marmousi-seed2.npz
+```

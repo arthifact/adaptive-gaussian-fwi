@@ -5,10 +5,19 @@ from unittest.mock import patch
 
 import numpy as np
 
+from scripts.match_macro_work import fixed_iterations
 from scripts.score_comparison import METHODS, compare_pair, score
 
 
 class PaperComparisonTests(unittest.TestCase):
+    def test_work_budget_includes_endpoint_and_never_overspends(self):
+        for target in (5, 10, 15, 17, 3250, 5520):
+            steps = fixed_iterations(target, 5)
+            self.assertLessEqual((2*steps+1)*5, target)
+            self.assertGreater((2*steps+3)*5, target)
+        with self.assertRaises(ValueError):
+            fixed_iterations(4, 5)
+
     def test_duplicate_method_is_rejected_before_solving(self):
         settings = dict(method=METHODS[0], model="marmousi", noise_seed=2)
         with patch("scripts.score_comparison.read_run", return_value=(settings,)):
