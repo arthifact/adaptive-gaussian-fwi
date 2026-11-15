@@ -1,4 +1,4 @@
-"""A fixed background plus pixel corrections, fitted one frequency at a time."""
+"""Fixed background plus per-cell corrections, fitted one band at a time."""
 
 import math
 
@@ -6,19 +6,20 @@ import torch
 
 
 class PixelField:
+    """A frozen background plus one trainable velocity correction per grid cell."""
+
     def __init__(self, background):
         self.background = background.detach().clone()
         self.details = torch.zeros_like(background, requires_grad=True)
 
     def velocity(self):
+        """Background plus the current corrections."""
         return self.background + self.details
 
 
 def fit_pixels(model, problem, frequency, iterations=350):
     """Fit one frequency with fresh Adam state; return the loss before each update."""
     problem.validate_cutoff(frequency)
-    if type(iterations) is not int or iterations < 0:
-        raise ValueError("iterations must be a nonnegative integer")
     losses = []
     if iterations == 0:
         return losses
@@ -33,6 +34,9 @@ def fit_pixels(model, problem, frequency, iterations=350):
         model.details.grad = gradient
         optimizer.step()
         with torch.no_grad():
-            model.details.clamp_(problem.bounds[0] - model.background, problem.bounds[1] - model.background)
+            model.details.clamp_(
+                problem.bounds[0] - model.background,
+                problem.bounds[1] - model.background,
+            )
     print(f"Pixels: {frequency:g} Hz, last pre-update loss {loss:.3e}")
     return losses

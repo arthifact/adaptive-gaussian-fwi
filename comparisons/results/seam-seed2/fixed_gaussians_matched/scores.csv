@@ -1,0 +1,3 @@
+model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+seam,2,6,529,64,591.2362175993401,0.6299184089510638,0.0006858718115836382,3670,1625,2650,2645
+seam,2,9,532,208,661.5698469505866,0.6046458953914038,0.0010542568052187562,3705,1625,2665,2660

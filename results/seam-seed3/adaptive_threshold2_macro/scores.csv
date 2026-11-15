@@ -1,0 +1,2 @@
+model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
+seam,3,threshold2,True,2.0,70,420,724.299072265625,913.4138793945312,0.6439693504627166,7360,3250

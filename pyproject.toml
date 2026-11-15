@@ -9,3 +9,9 @@ dependencies = [
     "numpy>=2.5.4",
     "torch>=2.14.1",
 ]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

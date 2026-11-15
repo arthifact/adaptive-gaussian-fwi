@@ -1,0 +1,3 @@
+model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+bp_salt,4,6,528,64,504.8913715528389,0.5482070203713542,0.00040575896855443716,3665,1625,2645,2640
+bp_salt,4,9,536,208,666.6623456731494,0.499495256595391,0.0007023460930213332,3745,1625,2685,2680

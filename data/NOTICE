@@ -1,0 +1,97 @@
+Velocity models: sources, credits and licenses
+==============================================
+
+Each array stores float32 speed in m/s with axes (depth, horizontal position).
+The experiment area-resamples the whole array to 70 x 70 cells at 10 m. Every
+run archive records the SHA-256 of the file it read. Each conversion below was
+checked against every velocity sample of the upstream distribution.
+
+
+marmousi.npy
+------------
+
+Native shape 751 x 2,301 (z, x), 4 m spacing on both axes.
+
+Source: IFP Marmousi, created by the Institut Francais du Petrole. Decoded from
+the XDR float32 samples in Madagascar's marmvel.hh in depth-fast order; the
+values are already in m/s.
+
+  Model history:  https://ahay.org/RSF/book/data/marmousi/paper.pdf
+  Source samples: https://ahay.org/data/marm/marmvel.hh
+
+
+overthrust.npy
+--------------
+
+Native shape 187 x 801 (z, x), 25 m spacing on both axes.
+
+Source: SEG/EAGE 3-D Overthrust model, CD1 file overthrust.vites, read as
+big-endian float32 with shape (z, y, x) = (187, 801, 801). This file is the 2-D
+section volume[:, 454, :] (zero-based y index 454), converted to NumPy. No
+velocity values were changed.
+
+  Distribution: https://zenodo.org/records/23469292
+
+Statement from the distributor, which must accompany the data:
+
+  The SEG/EAGE Salt and Overthrust models were created as part of a joint
+  project between the Society of Exploration Geophysicists and the European
+  Association of Geoscientists and Engineers. The datasets were originally
+  released by the SEG as a part of the SEG/EAGE 3-D Modeling Series and are
+  redistributed with the consent of the authors and the corresponding
+  institutions.
+
+  Copyright 1997 Society of Exploration Geophysicists
+
+  This model is licensed under the Creative Commons Attribution 4.0
+  International License. To view a copy of the license, visit
+  https://creativecommons.org/licenses/by/4.0
+
+Cite: Aminzadeh, F., Brac, J., Kunz, T., 1997. SEG/EAGE 3-D Salt and
+Overthrust Models. SEG/EAGE 3-D Modeling Series, No. 1: Distribution CD of
+Salt and Overthrust models, SEG book series.
+
+The model was created by the SEG/EAGE 3-D Modeling committee, co-chaired by
+Fred Aminzadeh (University of Southern California) and Fabio Rocca
+(Politecnico di Milano).
+
+
+bp_salt.npy
+-----------
+
+Native shape 1,911 x 5,395 (z, x), 6.25 m depth and 12.5 m horizontal spacing.
+
+Source: 2004 BP velocity benchmark, exact velocity file
+vel_z6.25m_x12.5m_exact.segy.gz. IBM floats decoded to float32, traces
+transposed to (z, x), values kept in m/s.
+
+  Distribution: https://zenodo.org/records/23469290
+
+The BP 2004 velocity data are provided courtesy of BP. Acknowledge BP and
+Frederic Billette in publications and presentations that use these data.
+
+Cite: Billette, F. J., Brandsberg-Dahl, S., 2005. The 2004 BP velocity
+benchmark. 67th Annual International Meeting, EAGE, Expanded Abstracts, B035.
+
+BP's terms require its original documentation to accompany the data whenever
+it is passed on, with any change recorded in README_Modification. Those files
+are in data/bp2004/: the documentation and terms (2004_Benchmark_READMES.pdf),
+the modification record (README_Modification) and the abstract
+(eage_abstract.pdf).
+
+
+seam.npy
+--------
+
+Native shape 1,501 x 1,751 (z, x), 10 m depth and 20 m horizontal spacing.
+
+Source: SEAM Phase I elastic 2-D model subset, east-west profile at North
+23,900 m. The P-wave file SEAM_Vp_Elastic_N23900.sgy decoded and transposed to
+(z, x), in m/s. No velocity values were changed.
+
+  SEG open data:         https://seg.org/seam/open-data/
+  Original distribution: https://seam-open-data.s3.us-west-2.amazonaws.com/Phase+I/SEAM_I_2D_Model.zip
+
+  (c) 2013 by SEG Advanced Modeling Corporation, SEAM Open Data.
+  This work is licensed under a Creative Commons Attribution 4.0
+  International License. https://creativecommons.org/licenses/by/4.0

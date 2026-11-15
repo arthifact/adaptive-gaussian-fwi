@@ -1,4 +1,4 @@
-"""A fixed background plus movable, anisotropic Gaussian velocity corrections."""
+"""Fixed background plus anisotropic Gaussian velocity corrections."""
 
 import math
 
@@ -16,18 +16,14 @@ def gaussian(dz, dx, long, short, angle):
 
 
 class GaussianField:
-    """Each row is [z, x, log(width along angle), log(perpendicular width), angle, amplitude].
+    """Rows are [z, x, log width along, log width across, angle, amplitude].
 
-    At birth the first axis is at least as wide as the second. The two
+    When a Gaussian is created the first axis is at least as wide as the second. The two
     log widths are optimized independently, so their ordering can change.
     Grid shape, dtype and device come from the background.
     """
 
     def __init__(self, background, dx):
-        if (background.ndim != 2 or not background.is_floating_point()
-                or background.numel() == 0 or not bool(torch.isfinite(background).all())
-                or not math.isfinite(dx) or dx <= 0):
-            raise ValueError("background must be a nonempty finite floating-point 2D tensor and dx finite and positive")
         self.background = background.detach().clone()
         self.dx = float(dx)
         self.params = background.new_zeros((0, PARAMETERS_PER_GAUSSIAN))
@@ -43,28 +39,33 @@ class GaussianField:
         """Check a loaded or proposed table before its velocity is used for fitting."""
         if parameters.ndim != 2 or parameters.shape[1] != PARAMETERS_PER_GAUSSIAN:
             raise ValueError(f"Expected {PARAMETERS_PER_GAUSSIAN} columns in {context}")
-        if parameters.dtype != self.background.dtype or parameters.device != self.background.device:
-            raise ValueError(f"Gaussian parameters must match the background dtype and device in {context}")
         if not bool(torch.isfinite(parameters).all()):
             raise FloatingPointError(f"Non-finite Gaussian parameters in {context}")
         widths = parameters[:, 2:4].exp()
         if not bool((torch.isfinite(widths) & (widths > 0)).all()):
-            raise FloatingPointError(f"Gaussian widths must be representable, finite and positive in {context}")
+            raise FloatingPointError(f"Invalid Gaussian widths in {context}")
 
     def velocity(self, params=None):
+        """Background plus all Gaussians in `params` (default: the stored table)."""
         parameters = self.params if params is None else params
         # Each parameter gets two grid axes so all Gaussians can be evaluated together.
         z, x, log_long, log_short, angle, amplitude = parameters.T[..., None, None]
-        shapes = gaussian(self.z - z, self.x - x, log_long.exp(), log_short.exp(), angle)
+        shapes = gaussian(
+            self.z - z, self.x - x, log_long.exp(), log_short.exp(), angle
+        )
         return self.background + (amplitude * shapes).sum(0)
 
     def params_with_gaussian(self, z, x, long, short, angle, amp):
         """Return the parameter table a proposed addition would store."""
-        row = self.params.new_tensor([[z, x, math.log(long), math.log(short), angle, amp]])
+        row = self.params.new_tensor(
+            [[z, x, math.log(long), math.log(short), angle, amp]]
+        )
         return torch.cat((self.params, row))
 
     def add(self, z, x, long, short, angle, amp):
+        """Store one more Gaussian; `long` and `short` are widths in metres."""
         self.params = self.params_with_gaussian(z, x, long, short, angle, amp)
 
     def keep(self, mask):
+        """Keep only the Gaussians where `mask` is true."""
         self.params = self.params[mask]
