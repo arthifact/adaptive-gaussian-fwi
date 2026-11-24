@@ -57,14 +57,15 @@ class BaselineReliabilityTests(unittest.TestCase):
     def test_pipeline_saves_all_stages(self):
         true = torch.full((4, 4), 2000.0)
         problem = Mock(
-            bounds=(1000.0, 5500.0),
+            bounds=(1000.0, 7000.0),
             dx=10.0,
             n_shots=5,
             forward_shots=0,
             adjoint_shots=0,
         )
-        problem.forward.return_value = torch.zeros((1, 1, 8))
+        problem.observe.return_value = torch.zeros((1, 1, 8))
         problem.add_noise.side_effect = lambda clean, *args: clean + 0.01
+        problem.noise_record.side_effect = lambda clean, *args: clean + 0.01
         problem.lowpass.side_effect = lambda recordings, f: recordings
         problem.loss.return_value = 1.0
         problem.growth_threshold.return_value = 0.0
@@ -128,6 +129,6 @@ class BaselineReliabilityTests(unittest.TestCase):
         archive = publish.call_args.args[0]
         self.assertEqual(
             archive.parts[-4:],
-            ("results", "overthrust-seed2", "adaptive_no_pruning", "result.npz"),
+            ("results", "overthrust-seed2", "adaptive", "result.npz"),
         )
         plot.assert_called_once_with([archive])

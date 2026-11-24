@@ -190,7 +190,7 @@ def compare_pair(runs):
     initial_rmse = float(np.sqrt(np.mean((initial - truth64) ** 2)))
     with closing(FWI(dict(survey, n_shots=len(HELD_OUT_SHOTS)))) as heldout:
         heldout.sources[:, 0, 1] = torch.tensor(HELD_OUT_SHOTS)
-        heldout.observed = heldout.forward(torch.from_numpy(truth), accuracy=8)
+        heldout.observed = heldout.observe(torch.from_numpy(truth))
         fine_reference = refined_traces(heldout, truth, accuracy=8)
         fine_truth = refined_traces(heldout, truth, accuracy=4)
         for j, (stage, band) in enumerate(((1, 9), (3, 20), (4, 30))):

@@ -1,5 +1,8 @@
 """Fixed Gaussian lattice at 6 and 9 Hz, then pixel refinement at 13, 20 and 30 Hz.
 
+MACRO_RATE, the Adam step of the lattice amplitudes, was chosen on Marmousi seed 1
+only (paper/run_experiments.sh tune).
+
 Standalone on purpose: it has its own survey, simulation and loss and imports
 nothing from src/. tests/test_comparisons.py checks that the data, loss and
 gradient match src/simulation.py.
@@ -23,10 +26,11 @@ from matplotlib.figure import Figure
 
 ROOT = Path(__file__).resolve().parents[1]
 SHAPE, DX, DT, NT = (70, 70), 10.0, 0.001, 1000
-SHOTS, SOURCE_HZ, SNR_DB = 5, 15.0, 30.0
+SHOTS, SOURCE_HZ, SNR_DB = 5, 15.0, 20.0
 MACRO_BANDS, GRID_BANDS = (6, 9), (13, 20, 30)
 MACRO_ITERATIONS, GRID_ITERATIONS = 325, 350
 ADAM_RATE, ADAM_EPS = 10.0, 1e-20
+MACRO_RATE = 1.0  # m/s per Adam step of a lattice amplitude
 
 
 def load_models(name):
@@ -53,11 +57,11 @@ def tolerance(before, after, dtype):
 
 
 class Survey:
-    """Five surface shots, source-shaped noise and the normalized band loss."""
+    """Five surface shots, white noise and the normalized band loss."""
 
     def __init__(self, truth, seed, pool):
         self.pool = pool
-        self.bounds = 1000.0, max(5500.0, float(truth.max()))
+        self.bounds = 1000.0, 7000.0  # the same for every model
         self.lock = Lock()
         self.forwards = self.adjoints = 0
         self.sources = torch.zeros(SHOTS, 1, 2, dtype=torch.long)
@@ -69,17 +73,38 @@ class Survey:
         self.wavelet = deepwave.wavelets.ricker(
             SOURCE_HZ, NT, DT, 1.5 / SOURCE_HZ
         ).reshape(1, 1, NT)
-        clean = self.forward(truth, accuracy=8)
+        clean = self.observe(truth)
         generator = torch.Generator().manual_seed(seed)
         white = torch.randn(clean.shape, dtype=truth.dtype, generator=generator)
-        source = torch.fft.rfft(self.wavelet[0, 0].to(truth), 2 * NT).abs()
-        noise = torch.fft.irfft(torch.fft.rfft(white, 2 * NT) * source, 2 * NT)[
-            ..., :NT
-        ]
-        norm = noise.norm()
-        if not torch.isfinite(norm) or norm == 0:
-            raise ValueError("Cannot generate nonzero source-shaped noise")
-        self.observed = clean + (noise * clean.norm() / norm) / 10 ** (SNR_DB / 20)
+        self.observed = clean + white * clean.square().mean().sqrt() / 10 ** (
+            SNR_DB / 20
+        )
+
+    def observe(self, velocity):
+        """Clean recordings from a grid of half the spacing, 8th-order differences."""
+        fine = torch.nn.functional.interpolate(
+            velocity.detach()[None, None],
+            size=tuple(2 * n - 1 for n in velocity.shape),
+            mode="bilinear",
+            align_corners=True,
+        )[0, 0].contiguous()
+
+        def one_shot(index):
+            return deepwave.scalar(
+                fine,
+                DX / 2,
+                DT,
+                # Same point source: a quarter of the cell area needs 4x the amplitude.
+                source_amplitudes=4 * self.wavelet.to(fine),
+                source_locations=2 * self.sources[index : index + 1],
+                receiver_locations=2 * self.receivers,
+                accuracy=8,
+                pml_width=40,
+                pml_freq=SOURCE_HZ,
+                max_vel=self.bounds[1],
+            )[-1][0]
+
+        return torch.stack(list(self.pool.map(one_shot, range(SHOTS))))
 
     def shot(self, velocity, index, receivers=None, accuracy=4):
         """Recordings of one shot; counts the forward solve."""
@@ -260,14 +285,16 @@ class FixedField:
         return values.reshape_as(self.initial)
 
 
-def fit_fixed_band(field, survey, frequency, iterations=MACRO_ITERATIONS):
+def fit_fixed_band(
+    field, survey, frequency, iterations=MACRO_ITERATIONS, rate=MACRO_RATE
+):
     """Keep all shapes fixed and keep the best measured amplitudes in this band."""
     started = perf_counter()
     before = survey.forwards, survey.adjoints
     field.extend(frequency)
     survey.start_band(frequency)
     amplitudes = torch.nn.Parameter(field.amplitudes.clone())
-    optimizer = torch.optim.Adam([amplitudes], lr=ADAM_RATE, eps=ADAM_EPS)
+    optimizer = torch.optim.Adam([amplitudes], lr=rate, eps=ADAM_EPS)
     bank = torch.cat(field.banks)
     best, best_loss = amplitudes.detach().clone(), None
     losses = []
@@ -331,7 +358,7 @@ def save_preview(path, truth, initial, frequencies, maps, bounds):
     fig.savefig(path, dpi=200)
 
 
-def run(model, seed, macro_only=False):
+def run(model, seed, macro_only=False, rate=MACRO_RATE):
     """Run one model and seed; save to comparisons/results/<model>-seed<seed>/."""
     torch.set_num_threads(1)
     truth, initial = load_models(model)
@@ -342,7 +369,7 @@ def run(model, seed, macro_only=False):
         survey = Survey(truth, seed, pool)
         field = FixedField(initial)
         for frequency in MACRO_BANDS:
-            grid, record = fit_fixed_band(field, survey, frequency)
+            grid, record = fit_fixed_band(field, survey, frequency, rate=rate)
             maps.append(grid.numpy().copy())
             progress.append(record)
             parameters[f"amplitudes_{frequency}"] = field.amplitudes.numpy().copy()
@@ -380,6 +407,7 @@ def run(model, seed, macro_only=False):
             },
             macro_frequencies=MACRO_BANDS,
             macro_iterations=MACRO_ITERATIONS,
+            macro_adam_rate=rate,
             pixel_frequencies=grid_bands,
             pixel_iterations=GRID_ITERATIONS,
             survey=dict(
@@ -398,7 +426,12 @@ def run(model, seed, macro_only=False):
         / "comparisons"
         / "results"
         / f"{model}-seed{seed}"
-        / (METHOD_NAME + ("_macro" if macro_only else ""))
+        # Non-default rates go to their own folder, e.g. fixed_gaussians_rate3/.
+        / (
+            METHOD_NAME
+            + ("" if rate == MACRO_RATE else f"_rate{rate:g}")
+            + ("_macro" if macro_only else "")
+        )
     )
     folder.mkdir(parents=True, exist_ok=True)
     output = folder / "result.npz"
@@ -438,5 +471,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--noise-seed", type=int, default=2)
     parser.add_argument("--macro-only", action="store_true", help="stop after 9 Hz")
+    parser.add_argument(
+        "--rate", type=float, default=MACRO_RATE, help="Adam step of the amplitudes"
+    )
     args = parser.parse_args()
-    run(args.model, args.noise_seed, args.macro_only)
+    if not math.isfinite(args.rate) or args.rate <= 0:
+        parser.error("--rate must be finite and positive")
+    run(args.model, args.noise_seed, args.macro_only, args.rate)

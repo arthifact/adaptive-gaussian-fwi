@@ -1,8 +1,9 @@
 """Fit Gaussians for one frequency band (fit_gaussians).
 
 Each iteration runs the forward model for the loss and gradient. Every tenth
-iteration adds Gaussians where the gradient points (_grow) and drops faded ones
-(_prune); the others take one Adam step on all parameters (_refine).
+iteration adds Gaussians where the gradient points (_grow); the others take one
+Adam step on all parameters (_refine). Dropping faded Gaussians (_prune) is an
+option kept for the ablation, off by default.
 
 A Gaussian is added only if it lowers the loss by at least the BIC threshold
 (FWI.growth_threshold). The band returns the measured model with the lowest
@@ -147,7 +148,12 @@ def _prune(field, problem, frequency, loss, threshold):
 
 
 def _adam_step(parameters, state, gradient):
-    """Update parameters in place. Each Gaussian keeps its own age and two moments."""
+    """Update parameters in place. Each Gaussian keeps its own age and two moments.
+
+    Adam moves every parameter at about its rate whatever the size of its gradient.
+    That is what builds weakly illuminated deep structure, and it also lets a
+    Gaussian the data barely constrain drift (see README, known limits).
+    """
     age, mean, variance = state.unbind(1)
     age += 1
     beta1, beta2 = METHOD.adam_beta1, METHOD.adam_beta2
@@ -191,7 +197,7 @@ def fit_gaussians(
     frequency,
     iterations=DEFAULT_BAND_ITERATIONS,
     *,
-    prune=True,
+    prune=False,
     decisions=None,
 ):
     """Explore one band and write its best measured model into field.
@@ -256,7 +262,7 @@ def fit_gaussians(
         keep_if_best(loss, iteration, "gradient")
         losses.append(loss)
         if iteration % METHOD.growth_interval == 0:
-            # Structure round: grow, then prune.
+            # Structure round: grow (and prune, in the ablation).
             before = len(working)
             measured = _grow(
                 working,

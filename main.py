@@ -4,8 +4,9 @@ run_experiment simulates noisy data from the true model, fits Gaussians from a
 linear ramp (fit_stages), freezes them, refines every cell (refine_grid) and
 saves all stages and settings to results/<model>-seed<seed>/adaptive/.
 
-Besides making the data and scoring errors, the true model sets the upper
-velocity bound and the noise level behind the growth threshold.
+The true model is used only to make the data and to score errors. The velocity
+bounds are fixed, and the noise level behind the growth threshold comes from a
+separate noise-only record.
 """
 
 import argparse
@@ -29,6 +30,7 @@ from src.pixels import PixelField, fit_pixels
 from src.simulation import (
     FWI,
     MINIMUM_NOISE_WINDOW_S,
+    OBSERVATION_ACCURACY,
     PML_WIDTH_CELLS,
     PREDICTION_ACCURACY,
     TAPER_TRANSITION_FRACTION,
@@ -45,29 +47,33 @@ survey = {
     "nt": 1000,
     "source_frequency": 15.0,  # Ricker peak frequency, Hz
 }
-noise_db = 30  # None uses clean observations.
+noise_db = 20  # white noise below the RMS of the clean data; None for clean data
 noise_seed = 2
 gaussian_frequencies = (6, 9)  # low-pass cutoffs, Hz
 gaussian_iterations = DEFAULT_BAND_ITERATIONS
 pixel_frequencies = (13, 20, 30)
 pixel_iterations = 350
-prune_gaussians = True
+prune_gaussians = False  # pruning is only an ablation; it made the macromodel worse
 RAMP_M_S = (1500.0, 3000.0)
-MIN_SPEED_M_S = 1000.0
-MIN_UPPER_BOUND_M_S = 5500.0
-OBSERVATION_ACCURACY = 8
+VELOCITY_BOUNDS_M_S = (1000.0, 7000.0)  # the same for every model
 
 
 def prepare_observations(problem, truth, seed):
-    """Simulate the noisy data and store the added noise energy per band."""
+    """Simulate the noisy data and estimate the noise energy per band.
+
+    The estimate comes from a separate noise-only record, as if recorded before
+    shooting, so the fit never sees the noise that is inside the data.
+    """
     for frequency in gaussian_frequencies:
         problem.validate_cutoff(frequency)
-    clean = problem.forward(truth, accuracy=OBSERVATION_ACCURACY)
-    observed = clean if noise_db is None else problem.add_noise(clean, noise_db, seed)
-    problem.observed = observed
-    noise = observed - clean
+    clean = problem.observe(truth)
+    if noise_db is None:
+        problem.observed, record = clean, torch.zeros_like(clean)
+    else:
+        problem.observed = problem.add_noise(clean, noise_db, seed)
+        record = problem.noise_record(clean, noise_db, seed)
     problem.noise_energy = {
-        f: float(problem.lowpass(noise, f).square().sum())
+        f: float(problem.lowpass(record, f).square().sum())
         for f in dict.fromkeys(gaussian_frequencies)
     }
 
@@ -159,18 +165,15 @@ def run_experiment(
     if prune is None:
         prune = prune_gaussians
     truth = prepare_model(model_name, survey["shape"])
-    # Bounds come from the true model.
-    settings_survey = dict(
-        survey,
-        bounds=(MIN_SPEED_M_S, max(MIN_UPPER_BOUND_M_S, float(truth.max()))),
-        surface_velocity=float(truth[0].max()),
-    )
     depth = (
         torch.arange(truth.shape[0], dtype=truth.dtype, device=truth.device)[:, None]
-        * settings_survey["dx"]
+        * survey["dx"]
     )
     top, bottom = RAMP_M_S
     initial = (top + (bottom - top) * depth / depth.max()).expand_as(truth).clone()
+    settings_survey = dict(
+        survey, bounds=VELOCITY_BOUNDS_M_S, surface_velocity=float(initial[0].max())
+    )
     field = GaussianField(initial, settings_survey["dx"])
     grid_bands = () if macro_only else pixel_frequencies
     with closing(FWI(settings_survey)) as problem:
@@ -194,7 +197,7 @@ def run_experiment(
     # results/<model>-seed<seed>/<variant>/result.npz and result.png
     name = (
         "adaptive"
-        + ("" if prune else "_no_pruning")
+        + ("_pruning" if prune else "")
         + ("" if threshold_scale == 1 else f"_threshold{threshold_scale:g}")
         + ("_macro" if macro_only else "")
     )
@@ -217,7 +220,9 @@ def run_experiment(
         "noise_db": noise_db,
         "noise_seed": seed,
         "noise_energy": noise_energy,
-        "noise_energy_source": "synthetic_added_noise",
+        "noise_energy_source": "separate_noise_record",
+        "noise_kind": "white_gaussian",
+        "observation_grid": "half_spacing_bilinear",
         "observation_accuracy": OBSERVATION_ACCURACY,
         "prediction_accuracy": PREDICTION_ACCURACY,
         "pml_width_cells": PML_WIDTH_CELLS,

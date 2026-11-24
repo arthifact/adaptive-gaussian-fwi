@@ -1,8 +1,9 @@
 """Survey, Deepwave forward model and the band-limited misfit.
 
-forward simulates all shots, lowpass tapers the data below a cutoff, loss and
-gradient give the normalized misfit and its derivative per cell (one adjoint
-run per shot), and growth_threshold gives the BIC price per Gaussian.
+observe makes the data on a grid of half the spacing, forward predicts them on
+the inversion grid, lowpass tapers the data below a cutoff, loss and gradient
+give the normalized misfit and its derivative per cell (one adjoint run per
+shot), and growth_threshold gives the BIC price per Gaussian.
 """
 
 import math
@@ -16,6 +17,7 @@ from .method_settings import PARAMETERS_PER_GAUSSIAN
 
 # Wave solver and signal-processing conventions for these experiments.
 PREDICTION_ACCURACY = 4
+OBSERVATION_ACCURACY = 8  # observed data: 8th-order differences on half the spacing
 PML_WIDTH_CELLS = 20
 RICKER_PEAK_PERIODS = 1.5
 MAX_SHOT_WORKERS = 8
@@ -100,19 +102,58 @@ class FWI:
         )
         return torch.stack(list(recordings))
 
-    def add_noise(self, shots, snr_db, seed=0):
-        """Add reproducible Gaussian noise with the source wavelet's spectrum."""
+    def observe(self, velocity):
+        """Clean recordings of `velocity` from a grid of half the spacing.
+
+        Same extent, sources, receivers and PML width in metres, with 8th-order
+        differences. The inversion predicts on the coarse grid with 4th-order
+        differences, so even the true model does not reproduce these data.
+        """
+        velocity = velocity.detach()
+        fine = torch.nn.functional.interpolate(
+            velocity[None, None],
+            size=tuple(2 * n - 1 for n in velocity.shape),
+            mode="bilinear",
+            align_corners=True,
+        )[0, 0].contiguous()
+
+        def one_shot(shot):
+            return deepwave.scalar(
+                fine,
+                self.dx / 2,
+                self.dt,
+                # Same point source: a quarter of the cell area needs 4x the amplitude.
+                source_amplitudes=4 * self.wavelet.to(fine),
+                source_locations=2 * self.sources[shot : shot + 1],
+                receiver_locations=2 * self.receivers,
+                accuracy=OBSERVATION_ACCURACY,
+                pml_width=2 * PML_WIDTH_CELLS,
+                pml_freq=self.source_frequency,
+                max_vel=self.bounds[1],
+            )[-1][0]
+
+        return torch.stack(list(self._pool.map(one_shot, range(self.n_shots))))
+
+    def _noise(self, shots, snr_db, seed, draw):
+        """White Gaussian noise `snr_db` below the RMS of `shots`, realization `draw`."""
         generator = torch.Generator(device=shots.device).manual_seed(seed)
-        white = torch.randn(
-            shots.shape, dtype=shots.dtype, device=shots.device, generator=generator
-        )
-        n_fft = 2 * shots.shape[-1]
-        white_spectrum = torch.fft.rfft(white, n_fft)
-        wavelet_spectrum = torch.fft.rfft(self.wavelet[0, 0].to(shots), n_fft).abs()
-        noise = torch.fft.irfft(white_spectrum * wavelet_spectrum, n_fft)
-        noise = noise[..., : shots.shape[-1]]
-        scaled_noise = noise * shots.norm() / noise.norm()
-        return shots + scaled_noise / 10 ** (snr_db / 20)
+        for _ in range(draw + 1):
+            white = torch.randn(
+                shots.shape, dtype=shots.dtype, device=shots.device, generator=generator
+            )
+        return white * shots.square().mean().sqrt() / 10 ** (snr_db / 20)
+
+    def add_noise(self, shots, snr_db, seed=0):
+        """Add reproducible white Gaussian noise."""
+        return shots + self._noise(shots, snr_db, seed, 0)
+
+    def noise_record(self, shots, snr_db, seed=0):
+        """A separate noise-only record with the same statistics as the added noise.
+
+        It stands for a record made before shooting; the growth threshold takes its
+        noise level from it, not from the noise inside the data.
+        """
+        return self._noise(shots, snr_db, seed, 1)
 
     def validate_cutoff(self, frequency):
         """Raise ValueError unless 0 < frequency <= Nyquist."""

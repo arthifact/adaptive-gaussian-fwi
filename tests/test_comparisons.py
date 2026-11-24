@@ -30,12 +30,12 @@ class ComparisonTests(unittest.TestCase):
             n_receivers=None,
             source_frequency=15.0,
             surface_velocity=1800.0,
-            bounds=(1000.0, 5500.0),
+            bounds=(1000.0, 7000.0),
         )
         initial = torch.full_like(truth, 1900.0)
         with closing(FWI(spec)) as adaptive, ThreadPoolExecutor(5) as pool:
-            clean = adaptive.forward(truth, accuracy=8)
-            adaptive.observed = adaptive.add_noise(clean, 30.0, 101)
+            clean = adaptive.observe(truth)
+            adaptive.observed = adaptive.add_noise(clean, 20.0, 101)
             adaptive_loss, adaptive_gradient = adaptive.gradient(initial, 9.0)
             for module in (fixed_gaussians, pixels_plain, pixels_smoothed, pixels_tv):
                 with self.subTest(method=module.METHOD_NAME):
@@ -46,7 +46,7 @@ class ComparisonTests(unittest.TestCase):
                     self.assertEqual(loss, adaptive_loss)
                     self.assertTrue(torch.equal(gradient, adaptive_gradient))
                     self.assertEqual(control.loss(initial), adaptive.loss(initial, 9.0))
-                    self.assertEqual((control.forwards, control.adjoints), (15, 5))
+                    self.assertEqual((control.forwards, control.adjoints), (10, 5))
 
     def test_smoothing_is_isotropic(self):
         image = torch.ones(11, 11, dtype=torch.float64)
@@ -73,7 +73,7 @@ class ComparisonTests(unittest.TestCase):
             n_receivers=None,
             source_frequency=15.0,
             surface_velocity=1750.0,
-            bounds=(1000.0, 5500.0),
+            bounds=(1000.0, 7000.0),
         )
         with closing(FWI(spec)) as native, ThreadPoolExecutor(5) as pool:
             fixed = fixed_gaussians.Survey(truth, 101, pool)

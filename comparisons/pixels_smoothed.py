@@ -23,7 +23,7 @@ from matplotlib.figure import Figure
 
 ROOT = Path(__file__).resolve().parents[1]
 SHAPE, DX, DT, NT = (70, 70), 10.0, 0.001, 1000
-SHOTS, SOURCE_HZ, SNR_DB = 5, 15.0, 30.0
+SHOTS, SOURCE_HZ, SNR_DB = 5, 15.0, 20.0
 MACRO_BANDS, GRID_BANDS = (6, 9), (13, 20, 30)
 MACRO_ITERATIONS, GRID_ITERATIONS = 325, 350
 ADAM_RATE, ADAM_EPS = 10.0, 1e-20
@@ -48,11 +48,11 @@ def digest(tensor):
 
 
 class Survey:
-    """Five surface shots, source-shaped noise and the normalized band loss."""
+    """Five surface shots, white noise and the normalized band loss."""
 
     def __init__(self, truth, seed, pool):
         self.pool = pool
-        self.bounds = 1000.0, max(5500.0, float(truth.max()))
+        self.bounds = 1000.0, 7000.0  # the same for every model
         self.lock = Lock()
         self.forwards = self.adjoints = 0
         self.sources = torch.zeros(SHOTS, 1, 2, dtype=torch.long)
@@ -64,17 +64,38 @@ class Survey:
         self.wavelet = deepwave.wavelets.ricker(
             SOURCE_HZ, NT, DT, 1.5 / SOURCE_HZ
         ).reshape(1, 1, NT)
-        clean = self.forward(truth, accuracy=8)
+        clean = self.observe(truth)
         generator = torch.Generator().manual_seed(seed)
         white = torch.randn(clean.shape, dtype=truth.dtype, generator=generator)
-        source = torch.fft.rfft(self.wavelet[0, 0].to(truth), 2 * NT).abs()
-        noise = torch.fft.irfft(torch.fft.rfft(white, 2 * NT) * source, 2 * NT)[
-            ..., :NT
-        ]
-        norm = noise.norm()
-        if not torch.isfinite(norm) or norm == 0:
-            raise ValueError("Cannot generate nonzero source-shaped noise")
-        self.observed = clean + (noise * clean.norm() / norm) / 10 ** (SNR_DB / 20)
+        self.observed = clean + white * clean.square().mean().sqrt() / 10 ** (
+            SNR_DB / 20
+        )
+
+    def observe(self, velocity):
+        """Clean recordings from a grid of half the spacing, 8th-order differences."""
+        fine = torch.nn.functional.interpolate(
+            velocity.detach()[None, None],
+            size=tuple(2 * n - 1 for n in velocity.shape),
+            mode="bilinear",
+            align_corners=True,
+        )[0, 0].contiguous()
+
+        def one_shot(index):
+            return deepwave.scalar(
+                fine,
+                DX / 2,
+                DT,
+                # Same point source: a quarter of the cell area needs 4x the amplitude.
+                source_amplitudes=4 * self.wavelet.to(fine),
+                source_locations=2 * self.sources[index : index + 1],
+                receiver_locations=2 * self.receivers,
+                accuracy=8,
+                pml_width=40,
+                pml_freq=SOURCE_HZ,
+                max_vel=self.bounds[1],
+            )[-1][0]
+
+        return torch.stack(list(self.pool.map(one_shot, range(SHOTS))))
 
     def shot(self, velocity, index, receivers=None, accuracy=4):
         """Recordings of one shot; counts the forward solve."""

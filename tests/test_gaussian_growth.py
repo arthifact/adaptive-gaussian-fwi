@@ -78,7 +78,7 @@ class GaussianGrowthTests(unittest.TestCase):
         # Isolate admission and pruning from the number of signed gradient regions.
         candidate = dict(z=140.0, x=320.0, long=240.0, short=120.0, angle=0.25)
         with patch.object(MomentCandidates, "propose", return_value=[candidate]):
-            fit_gaussians(default, problem, 6, iterations=1)
+            fit_gaussians(default, problem, 6, iterations=1, prune=True)
             fit_gaussians(kept, problem, 6, iterations=1, prune=False)
         self.assertEqual(len(default), 1)
         self.assertEqual(len(kept), 1)

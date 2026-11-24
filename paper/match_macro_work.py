@@ -24,7 +24,7 @@ def fixed_iterations(target, shots):
     return (target - shots) // (2 * shots)
 
 
-def match_work(reference, output):
+def match_work(reference, output, rate=fixed.MACRO_RATE):
     """Rerun the fixed lattice with the adaptive shot budget and save to `output`."""
     reference = reference / "result.npz" if reference.is_dir() else reference
     settings, progress, truth, initial, _, _ = read_run(reference)
@@ -45,7 +45,9 @@ def match_work(reference, output):
         for band, adaptive in zip(fixed.MACRO_BANDS, progress[:2], strict=True):
             target = adaptive["forward_shots"] + adaptive["adjoint_shots"]
             iterations = fixed_iterations(target, fixed.SHOTS)
-            grid, record = fixed.fit_fixed_band(field, control, band, iterations)
+            grid, record = fixed.fit_fixed_band(
+                field, control, band, iterations, rate
+            )
             total = record["forward_shots"] + record["adjoint_shots"]
             if not 0 <= target - total < 2 * fixed.SHOTS:
                 raise ValueError("The recorded work does not match the intended budget")
@@ -63,7 +65,7 @@ def match_work(reference, output):
             parameters[f"geometry_{band}"] = field.centers.numpy().copy()
     with closing(FWI(dict(survey, n_shots=len(HELD_OUT_SHOTS)))) as heldout:
         heldout.sources[:, 0, 1] = torch.tensor(HELD_OUT_SHOTS)
-        heldout.observed = heldout.forward(fixed_truth, accuracy=8)
+        heldout.observed = heldout.observe(fixed_truth)
         for grid, record in zip(maps, records, strict=True):
             record["heldout_clean_loss"] = heldout.loss(
                 torch.from_numpy(grid), record["frequency"]
@@ -73,6 +75,7 @@ def match_work(reference, output):
         model=settings["model"],
         noise_seed=settings["noise_seed"],
         noise_db=settings["noise_db"],
+        macro_adam_rate=rate,
         survey=survey,
         input_sha256=settings["input_sha256"],
         observation_sha256=settings["observation_sha256"],
@@ -132,6 +135,12 @@ if __name__ == "__main__":
         type=Path,
         help="default: comparisons/results/<case>/fixed_gaussians_matched/result.npz",
     )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=fixed.MACRO_RATE,
+        help="Adam step of the amplitudes",
+    )
     args = parser.parse_args()
     run_folder = (
         args.adaptive_run if args.adaptive_run.is_dir() else args.adaptive_run.parent
@@ -142,7 +151,11 @@ if __name__ == "__main__":
             / "comparisons"
             / "results"
             / run_folder.parent.name
-            / "fixed_gaussians_matched"
+            # Non-default rates go to their own folder, as in fixed_gaussians.py.
+            / (
+                "fixed_gaussians_matched"
+                + ("" if args.rate == fixed.MACRO_RATE else f"_rate{args.rate:g}")
+            )
             / "result.npz"
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -156,4 +169,4 @@ if __name__ == "__main__":
     ):
         parser.error("Use a separate output file for the matched control")
     torch.set_num_threads(1)
-    match_work(args.adaptive_run, args.output)
+    match_work(args.adaptive_run, args.output, args.rate)

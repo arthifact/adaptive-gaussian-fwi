@@ -1,7 +1,7 @@
-"""Tabulate the ablations: no pruning, and the growth threshold halved or doubled.
+"""Tabulate the ablations: pruning on, and the growth threshold halved or doubled.
 
 Each ablation is a macro-only run (6 and 9 Hz), e.g. results/<model>-seed<seed>/
-adaptive_no_pruning_macro/, compared with the 6 and 9 Hz stages of adaptive/ on
+adaptive_pruning_macro/, compared with the 6 and 9 Hz stages of adaptive/ on
 the same data. Writes paper/tables/ablations.csv and a scores.csv per ablation.
 """
 

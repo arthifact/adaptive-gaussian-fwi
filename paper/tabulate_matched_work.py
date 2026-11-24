@@ -1,6 +1,8 @@
 """Tabulate the matched-work fixed-lattice runs.
 
-Writes the combined table and a scores.csv in each fixed_gaussians_matched folder.
+Every case needs the run at the reported Adam step; runs at other steps
+(fixed_gaussians_matched_rate<step>/) are added when present. Writes the
+combined table and a scores.csv in each run folder.
 """
 
 import argparse
@@ -11,32 +13,34 @@ from pathlib import Path
 
 import numpy as np
 
+from comparisons.fixed_gaussians import MACRO_RATE
 from paper.score_comparison import ssim
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def tabulate(root=ROOT):
-    """Rows of the matched-work table from the runs under `root`."""
-    rows = []
+    """Rows of the matched-work table, and the run folder of each row."""
+    rows, folders = [], []
     results = root / "results"
     expected = {p.parent.parent.name for p in results.glob("*/adaptive/result.npz")}
     seen = set()
     for file in sorted(
-        (root / "comparisons" / "results").glob("*/fixed_gaussians_matched/result.npz")
+        (root / "comparisons" / "results").glob("*/fixed_gaussians_matched*/result.npz")
     ):
         with np.load(file, allow_pickle=False) as matched:
             settings = json.loads(matched["settings"].item())
             records = json.loads(matched["progress"].item())
             model, seed = settings["model"], settings["noise_seed"]
             case = f"{model}-seed{seed}"
+            rate = settings["macro_adam_rate"]
             if (
                 case not in expected
-                or case in seen
+                or (case, rate) in seen
                 or settings["method"] != "fixed_gaussians_matched_macro_work"
             ):
                 raise ValueError(f"Unexpected or duplicate work-matched case in {file}")
-            seen.add(case)
+            seen.add((case, rate))
             reference = results / case / "adaptive" / "result.npz"
             if (
                 hashlib.sha256(reference.read_bytes()).hexdigest()
@@ -67,6 +71,7 @@ def tabulate(root=ROOT):
                     dict(
                         model=model,
                         seed=seed,
+                        adam_step_m_s=rate,
                         band_hz=record["frequency"],
                         iterations=record["iterations"],
                         fitted_values=record["fitted_values"],
@@ -83,11 +88,12 @@ def tabulate(root=ROOT):
                         fixed_fit_adjoint_shots=record["adjoint_shots"],
                     )
                 )
-    if not expected or seen != expected:
+                folders.append(file.parent)
+    if not expected or {c for c, r in seen if r == MACRO_RATE} != expected:
         raise ValueError(
             f"Expected one matched control for every adaptive reference in {root}"
         )
-    return rows
+    return rows, folders
 
 
 if __name__ == "__main__":
@@ -99,7 +105,7 @@ if __name__ == "__main__":
         help="combined CSV",
     )
     args = parser.parse_args()
-    rows = tabulate()
+    rows, folders = tabulate()
 
     def write_csv(path, selected):
         with path.open("w", newline="") as stream:
@@ -108,14 +114,8 @@ if __name__ == "__main__":
             writer.writerows(selected)
 
     write_csv(args.output, rows)
-    for case in sorted({(r["model"], r["seed"]) for r in rows}):
-        folder = (
-            ROOT
-            / "comparisons"
-            / "results"
-            / f"{case[0]}-seed{case[1]}"
-            / "fixed_gaussians_matched"
-        )
+    for folder in sorted(set(folders)):
         write_csv(
-            folder / "scores.csv", [r for r in rows if (r["model"], r["seed"]) == case]
+            folder / "scores.csv",
+            [r for r, f in zip(rows, folders, strict=True) if f == folder],
         )
