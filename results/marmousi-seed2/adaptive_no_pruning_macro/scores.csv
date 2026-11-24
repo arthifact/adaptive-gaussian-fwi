@@ -1,2 +1,0 @@
-model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
-marmousi,2,no_pruning,False,1.0,67,402,605.1913452148438,559.9415283203125,0.4147848873439149,7230,3250

@@ -1,0 +1,3 @@
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+marmousi,2,10.0,6,523,64,552.250404698582,0.47817299724675827,0.0038608734030276537,3610,1625,2620,2615
+marmousi,2,10.0,9,523,208,786.2751406650749,0.46072894640198875,0.006501565221697092,3610,1625,2620,2615

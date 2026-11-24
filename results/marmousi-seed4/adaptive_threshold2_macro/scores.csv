@@ -1,2 +1,2 @@
-model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
-marmousi,4,threshold2,True,2.0,42,252,673.1358642578125,572.8759155273438,0.4062012185854591,7385,3250
+model,seed,variant,pruning,threshold_scale,gaussians_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
+marmousi,4,threshold2,False,2.0,18,108,1051.3983154296875,933.3998413085938,0.45970271466655427,7225,3250

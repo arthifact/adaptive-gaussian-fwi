@@ -1,0 +1,3 @@
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+overthrust,4,10.0,6,520,64,1073.1566798393665,0.3470872002976744,0.004110544919967651,3580,1625,2605,2600
+overthrust,4,10.0,9,523,208,811.631162568812,0.4456765543098032,0.003599924733862281,3615,1625,2620,2615

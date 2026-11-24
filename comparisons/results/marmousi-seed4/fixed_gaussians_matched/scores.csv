@@ -1,3 +1,3 @@
-model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
-marmousi,4,6,531,64,529.2899301555411,0.4069383107713917,0.0009309646557085216,3690,1625,2660,2655
-marmousi,4,9,534,208,679.9198109224742,0.4091231335367424,0.0014693648554384708,3725,1625,2675,2670
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+marmousi,4,1.0,6,523,64,562.6952878431283,0.4725524887694309,0.0044474611058831215,3615,1625,2620,2615
+marmousi,4,1.0,9,523,208,553.6998032768215,0.4697814671018561,0.0064591276459395885,3615,1625,2620,2615

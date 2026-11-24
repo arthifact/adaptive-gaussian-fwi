@@ -1,3 +1,3 @@
-model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
-bp_salt,2,6,534,64,522.6120515291137,0.5473472710169184,0.0004179413663223386,3725,1625,2675,2670
-bp_salt,2,9,537,208,638.2110397724061,0.5175977468407299,0.0006679422804154456,3750,1625,2690,2685
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+bp_salt,2,1.0,6,520,64,947.0534127784649,0.5835771336088343,0.00624771136790514,3585,1625,2605,2600
+bp_salt,2,1.0,9,523,208,531.4323041597281,0.5874328919051257,0.0055994256399571896,3615,1625,2620,2615

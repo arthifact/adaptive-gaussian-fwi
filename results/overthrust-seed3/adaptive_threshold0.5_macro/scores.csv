@@ -1,2 +1,2 @@
-model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
-overthrust,3,threshold0.5,True,0.5,81,486,443.02008056640625,367.5537414550781,0.4284299709011456,7235,3250
+model,seed,variant,pruning,threshold_scale,gaussians_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
+overthrust,3,threshold0.5,False,0.5,36,216,710.13720703125,395.3592529296875,0.45954327952676877,7185,3250

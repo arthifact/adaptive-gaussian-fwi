@@ -1,3 +1,3 @@
-model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
-overthrust,3,6,519,64,1516.5442488808799,0.2723342466309005,0.0021872378420084715,3575,1625,2600,2595
-overthrust,3,9,525,208,394.6250325444982,0.4013658892282105,0.0003434309328440577,3630,1625,2630,2625
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+overthrust,3,1.0,6,520,64,1720.3523929920643,0.34273694163268514,0.05160528048872948,3580,1625,2605,2600
+overthrust,3,1.0,9,523,208,1720.6564289703526,0.37438720270164944,0.0061377412639558315,3615,1625,2620,2615

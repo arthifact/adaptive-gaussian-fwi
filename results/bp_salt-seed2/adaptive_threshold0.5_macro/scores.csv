@@ -1,2 +1,2 @@
-model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
-bp_salt,2,threshold0.5,True,0.5,87,522,546.8751831054688,590.6151733398438,0.5959263886647759,7445,3250
+model,seed,variant,pruning,threshold_scale,gaussians_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
+bp_salt,2,threshold0.5,False,0.5,69,414,708.142578125,635.2412109375,0.6417230581716363,7210,3250

@@ -1,2 +1,0 @@
-model,seed,variant,pruning,threshold_scale,atoms_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
-bp_salt,4,no_pruning,False,1.0,106,636,530.896240234375,496.6766357421875,0.6151430437207346,7200,3250

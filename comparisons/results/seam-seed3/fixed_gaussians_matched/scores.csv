@@ -1,3 +1,3 @@
-model,seed,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
-seam,3,6,526,64,585.2048142657602,0.6254775741450811,0.0007015434675849974,3645,1625,2635,2630
-seam,3,9,535,208,645.1180491590334,0.6124614385820598,0.0010294495150446892,3735,1625,2680,2675
+model,seed,adam_step_m_s,band_hz,iterations,fitted_values,rmse_m_s,ssim,heldout_clean_loss,adaptive_fit_forward_shots,adaptive_fit_adjoint_shots,fixed_fit_forward_shots,fixed_fit_adjoint_shots
+seam,3,1.0,6,523,64,1160.9203631497792,0.6230473484838146,0.005312284454703331,3610,1625,2620,2615
+seam,3,1.0,9,523,208,535.3376328435877,0.7260132408090337,0.006370131392031908,3615,1625,2620,2615

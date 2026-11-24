@@ -1,0 +1,2 @@
+model,seed,variant,pruning,threshold_scale,gaussians_9_hz,fitted_values_9_hz,rmse_6_hz_m_s,rmse_9_hz_m_s,ssim_9_hz,forward_shots_through_9_hz,adjoint_shots_through_9_hz
+overthrust,3,pruning,True,1.0,26,156,765.882568359375,586.9497680664062,0.4511128929206537,7195,3250
